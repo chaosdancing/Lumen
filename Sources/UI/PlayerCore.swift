@@ -17,6 +17,11 @@ struct MediaTrack: Identifiable, Hashable {
 @MainActor
 final class PlayerCore: ObservableObject {
     enum Backend { case av, mpv }
+    private enum DesiredSubtitle {
+        case automatic
+        case off
+        case track(MediaTrack)
+    }
 
     @Published private(set) var isPlaying = false
     @Published private(set) var currentTime: Double = 0
@@ -37,14 +42,23 @@ final class PlayerCore: ObservableObject {
     private weak var renderHost: (any MPVRenderHost)?
     private var pendingTarget: PlaybackTarget?
     private var pendingStart: Double = 0
+    private var pendingSession: UUID?
+    private var resourceLease: (any MediaSource)?
     private var ticker: Timer?
     private var resumeSeek: Double = 0
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
+    private var avLoadTask: Task<Void, Never>?
+    private var avTracksTask: Task<Void, Never>?
     private var avAudioGroup: AVMediaSelectionGroup?
     private var avSubtitleGroup: AVMediaSelectionGroup?
+    private var activeSession: UUID?
+    private var desiredRate: Float = 1
+    private var desiredSubtitle: DesiredSubtitle = .automatic
+    private var didReportEnd = false
     /// 上一次读到的轨道数量，变了就重新拉一遍
     private var lastTrackCount = -1
+    var onPlaybackEnded: (() -> Void)?
 
     init() {
         player.actionAtItemEnd = .pause
@@ -84,6 +98,12 @@ final class PlayerCore: ObservableObject {
     // MARK: 载入
 
     func load(_ target: PlaybackTarget, startAt: Double) {
+        stop()
+        errorText = nil
+        let session = UUID()
+        activeSession = session
+        resourceLease = target.resourceLease
+        didReportEnd = false
         resetTracks()
         #if os(iOS)
         // 杜比视界 / HDR 的 4K 片源交给 AVPlayer（系统原生支持 DV 与 HDR 映射），
@@ -100,15 +120,16 @@ final class PlayerCore: ObservableObject {
             backend = .mpv
             pendingTarget = target
             pendingStart = startAt
+            pendingSession = session
             if renderHost != nil { startMPVIfReady() }
             return
         }
 
         backend = .av
-        loadAV(target, startAt: startAt)
+        loadAV(target, startAt: startAt, session: session)
     }
 
-    private func loadAV(_ target: PlaybackTarget, startAt: Double) {
+    private func loadAV(_ target: PlaybackTarget, startAt: Double, session: UUID) {
         AppLog.info("AV 播放：\(target.url.absoluteString.prefix(70)) headers=\(target.headers.count)")
         var options: [String: Any] = [AVURLAssetPreferPreciseDurationAndTimingKey: true]
         if !target.headers.isEmpty {
@@ -119,32 +140,72 @@ final class PlayerCore: ObservableObject {
         player.replaceCurrentItem(with: item)
         // 音轨/字幕轨由界面手动选，别让系统按语言偏好自动挑
         player.appliesMediaSelectionCriteriaAutomatically = false
-        Task { await loadAVTracks(item) }
+        avTracksTask = Task { [weak self] in
+            await self?.loadAVTracks(item, session: session)
+        }
 
+        removeEndObserver()
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.isPlaying = false }
+            Task { @MainActor in
+                guard let self, self.isCurrent(session, item: item) else { return }
+                self.isPlaying = false
+                self.reportPlaybackEnded()
+            }
         }
 
-        Task {
+        avLoadTask = Task { [weak self] in
+            guard let self else { return }
             do {
+                // 容器可读、音轨可播不代表视频兼容。HEV1 MP4 会正常推进时间，
+                // 但 AVPlayer 永远不出画面，所以必须检查实际视频轨。
+                let videoTracks = try await asset.loadTracks(withMediaType: .video)
+                guard !Task.isCancelled, self.isCurrent(session, item: item) else { return }
+                for track in videoTracks {
+                    let playable = try await track.load(.isPlayable)
+                    guard !Task.isCancelled, self.isCurrent(session, item: item) else { return }
+                    if !playable {
+                        self.fallbackToMPV(target, startAt: startAt, session: session,
+                                           item: item, reason: "视频轨不兼容 AVPlayer")
+                        return
+                    }
+                }
                 let d = try await asset.load(.duration)
+                guard !Task.isCancelled, self.isCurrent(session, item: item) else { return }
                 if d.seconds.isFinite { self.duration = d.seconds }
             } catch {
-                AppLog.error("AV 无法读取，回落 mpv：\(error.localizedDescription)")
-                self.backend = .mpv
-                self.pendingTarget = target
-                self.pendingStart = startAt
-                if self.renderHost != nil { self.startMPVIfReady() }
+                guard !Task.isCancelled, self.isCurrent(session, item: item) else { return }
+                self.fallbackToMPV(target, startAt: startAt, session: session,
+                                   item: item, reason: error.localizedDescription)
+                return
             }
             if startAt > 0 {
                 await player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600),
                                   toleranceBefore: .zero, toleranceAfter: .zero)
+                guard !Task.isCancelled, self.isCurrent(session, item: item) else { return }
             }
             player.play()
+            player.rate = desiredRate
             self.isPlaying = true
         }
+    }
+
+    private func fallbackToMPV(_ target: PlaybackTarget, startAt: Double,
+                               session: UUID, item: AVPlayerItem, reason: String) {
+        guard isCurrent(session, item: item) else { return }
+        AppLog.info("AV 回落 mpv：\(reason)")
+        avTracksTask?.cancel()
+        avTracksTask = nil
+        removeEndObserver()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        resetTracks()
+        backend = .mpv
+        pendingTarget = target
+        pendingStart = startAt
+        pendingSession = session
+        if renderHost != nil { startMPVIfReady() }
     }
 
     // MARK: 控制
@@ -152,7 +213,7 @@ final class PlayerCore: ObservableObject {
     func play() {
         switch backend {
         case .av:
-            player.play(); isPlaying = true
+            player.playImmediately(atRate: desiredRate); isPlaying = true
         case .mpv:
             mpvSet("pause", "no"); isPlaying = true
         }
@@ -181,28 +242,47 @@ final class PlayerCore: ObservableObject {
     /// 关闭播放器时调用：暂停、卸载、销毁 mpv 实例。
     /// 顺序很重要：先释放 render context，再 terminate mpv，否则会崩。
     func stop() {
-        switch backend {
-        case .av:
-            player.pause()
-            player.replaceCurrentItem(with: nil)
-        case .mpv:
-            ticker?.invalidate()
-            ticker = nil
+        activeSession = nil
+        pendingTarget = nil
+        pendingStart = 0
+        pendingSession = nil
+        resumeSeek = 0
+        avLoadTask?.cancel()
+        avLoadTask = nil
+        avTracksTask?.cancel()
+        avTracksTask = nil
+        removeEndObserver()
+
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+
+        ticker?.invalidate()
+        ticker = nil
+        if mpvHandle != nil {
             mpvSet("pause", "yes")
             mpvCommand("stop")
-            renderHost?.destroyRenderContext()
-            if let ctx = mpvHandle {
-                mpvHandle = nil
-                mpv_terminate_destroy(ctx)
-            }
         }
+        renderHost?.destroyRenderContext()
+        if let ctx = mpvHandle {
+            mpvHandle = nil
+            mpv_terminate_destroy(ctx)
+        }
+        resourceLease = nil
+        desiredRate = 1
+        desiredSubtitle = .automatic
+        didReportEnd = false
+        onPlaybackEnded = nil
+        resetTracks()
+        currentTime = 0
+        duration = 0
         isPlaying = false
     }
 
     func setRate(_ rate: Float) {
+        desiredRate = rate
         switch backend {
         case .av:
-            player.rate = rate
+            if isPlaying { player.rate = rate }
         case .mpv:
             mpvSet("speed", String(format: "%.2f", rate))
         }
@@ -224,17 +304,8 @@ final class PlayerCore: ObservableObject {
 
     /// 切内嵌字幕；nil = 关掉内嵌字幕
     func selectSubtitleTrack(_ track: MediaTrack?) {
-        switch backend {
-        case .mpv:
-            mpvSet("sid", track.map { "\($0.index)" } ?? "no")
-        case .av:
-            guard let group = avSubtitleGroup else { return }
-            if let track, group.options.indices.contains(track.index) {
-                player.currentItem?.select(group.options[track.index], in: group)
-            } else {
-                player.currentItem?.select(nil, in: group)
-            }
-        }
+        desiredSubtitle = track.map(DesiredSubtitle.track) ?? .off
+        applyDesiredSubtitle()
         for i in subtitleTracks.indices {
             subtitleTracks[i].isSelected = (track != nil && subtitleTracks[i].id == track!.id)
         }
@@ -257,10 +328,55 @@ final class PlayerCore: ObservableObject {
         lastTrackCount = -1
     }
 
+    private func isCurrent(_ session: UUID, item: AVPlayerItem? = nil) -> Bool {
+        guard activeSession == session else { return false }
+        return item.map { player.currentItem === $0 } ?? true
+    }
+
+    private func removeEndObserver() {
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            self.endObserver = nil
+        }
+    }
+
+    private func applyDesiredSubtitle() {
+        switch backend {
+        case .mpv:
+            guard mpvHandle != nil else { return }
+            switch desiredSubtitle {
+            case .automatic:
+                break
+            case .off:
+                mpvSet("sid", "no")
+            case .track(let track):
+                mpvSet("sid", "\(track.index)")
+            }
+        case .av:
+            guard let group = avSubtitleGroup, let item = player.currentItem else { return }
+            switch desiredSubtitle {
+            case .automatic:
+                break
+            case .off:
+                item.select(nil, in: group)
+            case .track(let track):
+                guard group.options.indices.contains(track.index) else { return }
+                item.select(group.options[track.index], in: group)
+            }
+        }
+    }
+
+    private func reportPlaybackEnded() {
+        guard !didReportEnd else { return }
+        didReportEnd = true
+        onPlaybackEnded?()
+    }
+
     /// AVPlayer：从 asset 里读可选音轨 / 字幕组
-    private func loadAVTracks(_ item: AVPlayerItem) async {
+    private func loadAVTracks(_ item: AVPlayerItem, session: UUID) async {
         let asset = item.asset
         if let group = try? await asset.loadMediaSelectionGroup(for: .audible) {
+            guard !Task.isCancelled, isCurrent(session, item: item) else { return }
             avAudioGroup = group
             audioTracks = group.options.enumerated().map { i, option in
                 MediaTrack(id: "av:a\(i)", index: i,
@@ -269,12 +385,14 @@ final class PlayerCore: ObservableObject {
             }
         }
         if let group = try? await asset.loadMediaSelectionGroup(for: .legible) {
+            guard !Task.isCancelled, isCurrent(session, item: item) else { return }
             avSubtitleGroup = group
             subtitleTracks = group.options.enumerated().map { i, option in
                 MediaTrack(id: "av:s\(i)", index: i,
                            title: Self.avName(option, fallback: "字幕 \(i + 1)"),
                            detail: option.extendedLanguageTag ?? option.locale?.identifier)
             }
+            applyDesiredSubtitle()
         }
     }
 
@@ -373,9 +491,12 @@ final class PlayerCore: ObservableObject {
     }
 
     private func startMPVIfReady() {
-        guard let target = pendingTarget, let host = renderHost else { return }
+        guard let target = pendingTarget,
+              let session = pendingSession,
+              activeSession == session,
+              let host = renderHost else { return }
         if mpvHandle == nil { createMPV() }
-        guard let ctx = mpvHandle else { return }
+        guard activeSession == session, let ctx = mpvHandle else { return }
         if host.renderContextReady == false {
             guard host.createRenderContext(mpv: ctx) else {
                 errorText = "mpv render context 创建失败"
@@ -397,8 +518,11 @@ final class PlayerCore: ObservableObject {
         // 改成记下目标位置，等 ticker 拿到 duration 后再 seek。
         resumeSeek = pendingStart
         mpvSet("pause", "no")
+        mpvSet("speed", String(format: "%.2f", desiredRate))
+        applyDesiredSubtitle()
         isPlaying = true
         pendingTarget = nil
+        pendingSession = nil
         startTicker()
     }
 
@@ -462,6 +586,8 @@ final class PlayerCore: ObservableObject {
         AppLog.info("mpv 初始化 rc=\(rc)（render API 模式）")
         guard rc >= 0 else {
             errorText = "mpv 初始化失败（rc=\(rc)）"
+            mpvHandle = nil
+            mpv_terminate_destroy(ctx)
             return
         }
         AppLog.info("mpv 初始化完成（render API 模式）")
@@ -469,12 +595,30 @@ final class PlayerCore: ObservableObject {
 
 
 
+    private func drainMPVEvents(session: UUID, ctx: OpaquePointer) {
+        // The callback can stop or replace playback, invalidating ctx immediately.
+        while backend == .mpv, isCurrent(session), mpvHandle == ctx {
+            guard let event = mpv_wait_event(ctx, 0)?.pointee,
+                  event.eventID != MPV.eventNone else { return }
+            guard event.eventID == MPV.eventEndFile,
+                  let data = event.data,
+                  data.load(as: MPVEventEndFile.self).reason == MPV.endFileReasonEOF else {
+                continue
+            }
+            isPlaying = false
+            reportPlaybackEnded()
+        }
+    }
+
     private func startTicker() {
         ticker?.invalidate()
+        guard let session = activeSession, let ctx = mpvHandle else { return }
+        let handleID = UInt(bitPattern: ctx)
         ticker = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
-                guard self.backend == .mpv else { return }
+                guard self.backend == .mpv, self.isCurrent(session),
+                      let ctx = self.mpvHandle, UInt(bitPattern: ctx) == handleID else { return }
                 if let t = self.mpvDouble("time-pos") { self.currentTime = t }
                 if let d = self.mpvDouble("duration"), d > 0 {
                     self.duration = d
@@ -487,8 +631,11 @@ final class PlayerCore: ObservableObject {
                         }
                     }
                 }
-                if let paused = self.mpvFlag("pause") { self.isPlaying = !paused }
+                if !self.didReportEnd, let paused = self.mpvFlag("pause") {
+                    self.isPlaying = !paused
+                }
                 self.refreshMPVTracksIfNeeded()
+                self.drainMPVEvents(session: session, ctx: ctx)
             }
         }
     }

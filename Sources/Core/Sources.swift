@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// 所有存储后端收敛成这一个协议。新增一种源 = 新增一个实现，UI 与扫描器不用改。
 protocol MediaSource: AnyObject, Sendable {
@@ -15,17 +16,45 @@ protocol MediaSource: AnyObject, Sendable {
 
 extension MediaSource {
     func playbackHeaders() -> [String: String] { [:] }
+    func writeCache(_ data: Data, path: String) async throws {
+        guard let writable = self as? WritableMediaSource else { throw CacheWriteError.unsupported }
+        try await writable.writeCache(data, path: path)
+    }
+}
+
+protocol WritableMediaSource: MediaSource {
+    func writeCache(_ data: Data, path: String) async throws
+}
+
+enum CacheWriteError: LocalizedError {
+    case unsupported, invalidPath, conflict
+    var errorDescription: String? {
+        switch self {
+        case .unsupported: return "This source does not support cache writes."
+        case .invalidPath: return "Cache path must remain inside .lumen-cache."
+        case .conflict: return "Existing cache data was not overwritten."
+        }
+    }
+    static func validate(_ path: String) throws {
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count == 2, components[0] == ".lumen-cache",
+              !components[1].isEmpty, components[1] != ".", components[1] != "..",
+              !path.contains("\\"), !path.contains("%"), !path.contains("\0") else {
+            throw CacheWriteError.invalidPath
+        }
+    }
 }
 
 /// 播放目标：URL + 需要的请求头
 struct PlaybackTarget {
     var url: URL
     var headers: [String: String]
+    var resourceLease: (any MediaSource)? = nil
 }
 
 // MARK: - 本地目录
 
-final class LocalMediaSource: MediaSource, @unchecked Sendable {
+final class LocalMediaSource: WritableMediaSource, @unchecked Sendable {
     let config: MediaSourceConfig
     private let root: URL
     private var needsScope = true
@@ -62,8 +91,21 @@ final class LocalMediaSource: MediaSource, @unchecked Sendable {
 
     deinit { if needsScope { root.stopAccessingSecurityScopedResource() } }
 
+    private func containedURL(_ path: String) throws -> URL {
+        guard !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else {
+            throw SourceError.invalidURL
+        }
+        let url = path.isEmpty ? root : root.appendingPathComponent(path)
+        let base = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolved == base || resolved.hasPrefix(base == "/" ? "/" : base + "/") else {
+            throw SourceError.invalidURL
+        }
+        return url
+    }
+
     func list(path: String) async throws -> [RemoteEntry] {
-        let dir = path.isEmpty ? root : root.appendingPathComponent(path)
+        let dir = try containedURL(path)
         let urls = try FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
@@ -73,7 +115,8 @@ final class LocalMediaSource: MediaSource, @unchecked Sendable {
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
             let isDir = values?.isDirectory ?? false
             let name = url.lastPathComponent
-            if !isDir && !MediaFileType.isVideo(name) && !MediaFileType.isSidecar(name) {
+            if !isDir && !MediaFileType.isVideo(name) && !MediaFileType.isSidecar(name)
+                && path != ".lumen-cache" {
                 return nil
             }
             return RemoteEntry(name: name,
@@ -85,11 +128,96 @@ final class LocalMediaSource: MediaSource, @unchecked Sendable {
     }
 
     func playURL(for path: String) async throws -> URL {
-        root.appendingPathComponent(path)
+        try containedURL(path)
     }
 
     func data(for path: String) async throws -> Data {
-        try Data(contentsOf: root.appendingPathComponent(path))
+        try Data(contentsOf: containedURL(path))
+    }
+
+    func writeCache(_ data: Data, path: String) async throws {
+        try CacheWriteError.validate(path)
+        try Task.checkCancellation()
+        let directory = root.appendingPathComponent(".lumen-cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+        guard directory.resolvingSymlinksInPath().standardizedFileURL.path == resolvedRoot + "/.lumen-cache" else {
+            throw CacheWriteError.invalidPath
+        }
+        let url = root.appendingPathComponent(path)
+        if FileManager.default.fileExists(atPath: url.path) {
+            guard try Data(contentsOf: url) == data else { throw CacheWriteError.conflict }
+            return
+        }
+        let temporary = directory.appendingPathComponent(UUID().uuidString + ".tmp")
+        try data.write(to: temporary)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        // link publishes a complete file atomically and cannot replace an existing destination.
+        guard link(temporary.path, url.path) == 0 else {
+            if errno == EEXIST, (try? Data(contentsOf: url)) == data { return }
+            throw CacheWriteError.conflict
+        }
+    }
+}
+
+// MARK: - HTTP 直链
+
+final class HTTPMediaSource: MediaSource, @unchecked Sendable {
+    let config: MediaSourceConfig
+    private let url: URL
+    private let session: URLSession
+
+    init(config: MediaSourceConfig) throws {
+        self.config = config
+        guard let url = URL(string: config.directURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host?.isEmpty == false else {
+            throw SourceError.invalidURL
+        }
+        self.url = url
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 30
+        cfg.waitsForConnectivity = true
+        self.session = URLSession(configuration: cfg,
+                                  delegate: LocalNetworkTrustDelegate.shared,
+                                  delegateQueue: nil)
+    }
+
+    func list(path: String) async throws -> [RemoteEntry] {
+        guard path.isEmpty else { return [] }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        let (_, response) = try await session.data(for: request)
+        var http = response as? HTTPURLResponse
+
+        if http?.statusCode == 405 || http?.statusCode == 501 {
+            request.httpMethod = "GET"
+            request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+            let (bytes, streamedResponse) = try await session.bytes(for: request)
+            bytes.task.cancel()
+            http = streamedResponse as? HTTPURLResponse
+        }
+
+        guard let http else { throw SourceError.badResponse(0) }
+        guard (200..<300).contains(http.statusCode) else {
+            throw SourceError.badResponse(http.statusCode)
+        }
+        let decodedName = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+        let name = MediaFileType.isVideo(decodedName) ? decodedName : "stream.mp4"
+        let length = http.value(forHTTPHeaderField: "Content-Length").flatMap(Int64.init)
+        return [RemoteEntry(name: name, path: name, isDirectory: false, size: length)]
+    }
+
+    func playURL(for path: String) async throws -> URL { url }
+
+    func data(for path: String) async throws -> Data {
+        let (data, response) = try await session.data(from: url)
+        if let http = response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            throw SourceError.badResponse(http.statusCode)
+        }
+        return data
     }
 }
 
@@ -149,7 +277,7 @@ actor RequestGate {
     }
 }
 
-final class WebDAVMediaSource: MediaSource, @unchecked Sendable {
+final class WebDAVMediaSource: WritableMediaSource, @unchecked Sendable {
     let config: MediaSourceConfig
     private let session: URLSession
     private let rootURL: URL
@@ -227,7 +355,7 @@ final class WebDAVMediaSource: MediaSource, @unchecked Sendable {
             guard (200..<300).contains(http.statusCode) || http.statusCode == 207 else {
                 throw SourceError.badResponse(http.statusCode)
             }
-            return WebDAVResponseParser.parse(data, directoryPath: url.path, relativeTo: path)
+            return try WebDAVResponseParser.parse(data, directoryPath: url.path, relativeTo: path)
         }
         await RequestGate.shared.release()
         let (data, response) = result
@@ -236,7 +364,7 @@ final class WebDAVMediaSource: MediaSource, @unchecked Sendable {
         guard (200..<300).contains(http.statusCode) || http.statusCode == 207 else {
             throw SourceError.badResponse(http.statusCode)
         }
-        return WebDAVResponseParser.parse(data, directoryPath: url.path, relativeTo: path)
+        return try WebDAVResponseParser.parse(data, directoryPath: url.path, relativeTo: path)
     }
 
     func playURL(for path: String) async throws -> URL {
@@ -256,6 +384,36 @@ final class WebDAVMediaSource: MediaSource, @unchecked Sendable {
         }
         return data
     }
+
+    func writeCache(_ data: Data, path: String) async throws {
+        try CacheWriteError.validate(path)
+        try Task.checkCancellation()
+        var directory = rootURL
+        directory.appendPathComponent(".lumen-cache", isDirectory: true)
+        var mkdir = URLRequest(url: directory)
+        mkdir.httpMethod = "MKCOL"
+        authorize(&mkdir)
+        let (_, response) = try await session.data(for: mkdir)
+        guard let http = response as? HTTPURLResponse,
+              http.statusCode == 201 || http.statusCode == 405 else {
+            throw SourceError.badResponse((response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+        try Task.checkCancellation()
+        let url = directory.appendingPathComponent((path as NSString).lastPathComponent)
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.httpBody = data
+        request.setValue("*", forHTTPHeaderField: "If-None-Match")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        let (_, putResponse) = try await session.data(for: request)
+        guard let put = putResponse as? HTTPURLResponse else { throw SourceError.badResponse(0) }
+        if put.statusCode == 412 {
+            guard try await self.data(for: path) == data else { throw CacheWriteError.conflict }
+            return
+        }
+        guard put.statusCode == 201 || put.statusCode == 204 else { throw SourceError.badResponse(put.statusCode) }
+    }
 }
 
 /// PROPFIND 响应解析：只取 href / resourcetype / getcontentlength
@@ -267,15 +425,21 @@ final class WebDAVResponseParser: NSObject, XMLParserDelegate {
     private var nodes: [Node] = []
     private var current: Node?
     private var stack: [String] = []
+    private var sawMultistatus = false
 
     /// - Parameters:
     ///   - directoryPath: 当前请求目录的绝对路径，例如 `/video/movies`
     ///   - relativeTo: 该目录相对于源根的路径，例如 `""` 或 `剧集/第一季`
-    static func parse(_ data: Data, directoryPath: String, relativeTo: String) -> [RemoteEntry] {
+    static func parse(_ data: Data, directoryPath: String, relativeTo: String) throws -> [RemoteEntry] {
         let p = WebDAVResponseParser()
         let parser = XMLParser(data: data)
         parser.delegate = p
-        parser.parse()
+        guard parser.parse() else {
+            throw parser.parserError ?? SourceError.invalidResponse("XML 解析失败")
+        }
+        guard p.sawMultistatus else {
+            throw SourceError.invalidResponse("缺少 DAV multistatus 根节点")
+        }
 
         let dir = normalize(directoryPath)
         var result: [RemoteEntry] = []
@@ -297,7 +461,8 @@ final class WebDAVResponseParser: NSObject, XMLParserDelegate {
 
             if !node.isCollection,
                !MediaFileType.isVideo(name),
-               !MediaFileType.isSidecar(name) {
+               !MediaFileType.isSidecar(name),
+               relativeTo != ".lumen-cache" {
                 continue
             }
 
@@ -313,13 +478,11 @@ final class WebDAVResponseParser: NSObject, XMLParserDelegate {
 
     /// href 可能是绝对 URL（http://host/a/b）也可能是路径（/a/b），统一取出路径部分并解码
     private static func pathComponent(of href: String) -> String? {
-        var raw = href.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = href.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
-        if raw.lowercased().hasPrefix("http"), let u = URL(string: raw) {
-            raw = u.path
-        }
-        if let decoded = raw.removingPercentEncoding { raw = decoded }
-        return raw.isEmpty ? nil : raw
+        guard let encodedPath = URLComponents(string: raw)?.percentEncodedPath,
+              !encodedPath.isEmpty else { return nil }
+        return encodedPath.removingPercentEncoding ?? encodedPath
     }
 
     /// 去掉末尾斜杠（保留根 "/"）
@@ -342,6 +505,7 @@ final class WebDAVResponseParser: NSObject, XMLParserDelegate {
                 attributes attributeDict: [String: String] = [:]) {
         let name = Self.localName(elementName, qName)
         stack.append(name)
+        if stack.count == 1, name == "multistatus" { sawMultistatus = true }
         if name == "response" { current = Node() }
         if name == "collection", current != nil { current?.isCollection = true }
         current?.text = ""
@@ -395,7 +559,7 @@ enum MediaSourceFactory {
         case .local:  return try LocalMediaSource(config: config)
         case .webdav: return try WebDAVMediaSource(config: config)
         case .smb:    return SMBMediaSource(config: config)
-        case .http:   return try WebDAVMediaSource(config: config)  // 直链场景只用 playURL
+        case .http:   return try HTTPMediaSource(config: config)
         case .emby, .jellyfin: return try MediaServerSource(config: config)
         }
     }

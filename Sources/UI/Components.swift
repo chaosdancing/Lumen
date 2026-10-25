@@ -21,6 +21,8 @@ struct ArtworkView: View {
 
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var artwork: ArtworkStore
+    @ObservedObject private var metadata = MetadataStore.shared
+    @ObservedObject private var preferences = Preferences.shared
     @State private var image: PlatformImage?
     static var thumbLogCount = 0
 
@@ -51,12 +53,29 @@ struct ArtworkView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: item?.id) {
+        .task(id: taskIdentity) {
+            let identity = taskIdentity
+            image = nil
             guard let item else { return }
-            if let hit = artwork.cached(item.id) { image = hit; return }
-            let loaded = await artwork.image(for: item, in: store)
+            if let hit = artwork.cached(for: item, variant: variant, in: store) {
+                guard !Task.isCancelled, identity == taskIdentity else { return }
+                image = hit
+                return
+            }
+            let loaded = await artwork.image(for: item, variant: variant, in: store)
+            guard !Task.isCancelled, identity == taskIdentity else { return }
             withAnimation(.easeOut(duration: 0.18)) { image = loaded }
         }
+    }
+
+    private var taskIdentity: String {
+        guard let item else { return "empty" }
+        // Core's key includes artworkMetadata paths/provenance and both backdrop/poster fallback.
+        let cacheIdentity = artwork.requestIdentity(for: item, variant: variant, in: store)
+        let poster = metadata.cachedPosterURL(for: item)?.absoluteString ?? ""
+        let backdrop = metadata.backdropURL(for: item)?.absoluteString ?? ""
+        let urls = String(decoding: (try? JSONEncoder().encode([poster, backdrop])) ?? Data(), as: UTF8.self)
+        return "\(cacheIdentity)#\(urls)"
     }
 
     private var placeholder: some View {
@@ -80,6 +99,96 @@ struct ArtworkView: View {
             [Color(red: 0.22, green: 0.14, blue: 0.14), Color(red: 0.10, green: 0.07, blue: 0.07)]
         ]
         return LinearGradient(colors: palettes[seed], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+// MARK: - Persistent remote and source-relative images
+
+@MainActor
+enum CachedImageLoader {
+    static func cached(path: String, sourceID: UUID) -> PlatformImage? {
+        let file = MetadataCache.imageURL(identity: MetadataCache.imageIdentity(path: path, sourceID: sourceID))
+        guard let data = try? Data(contentsOf: file), MetadataCache.validImage(data) else { return nil }
+        return PlatformImage(data: data)
+    }
+
+    static func load(path: String, source: MediaSource?,
+                     shouldCommit: @escaping @MainActor () -> Bool) async -> PlatformImage? {
+        let sourceID = source?.config.id ?? remoteSourceID
+        if let source {
+            do {
+                try await MetadataImageCache.shared.persist(path: path, source: source,
+                                                           shouldCommit: shouldCommit)
+            } catch {
+                if !Task.isCancelled, shouldCommit() {
+                    AppLog.info("Image cache: \(error.localizedDescription)")
+                }
+            }
+        } else if cached(path: path, sourceID: sourceID) == nil,
+                  let url = URL(string: path),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                  url.user == nil, url.password == nil {
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 20
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard !Task.isCancelled, shouldCommit(),
+                      let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                      MetadataCache.validImage(data) else { return nil }
+                let file = MetadataCache.imageURL(identity: MetadataCache.imageIdentity(path: path, sourceID: sourceID))
+                try data.write(to: file, options: .atomic)
+            } catch { return nil }
+        }
+        guard !Task.isCancelled, shouldCommit() else { return nil }
+        return cached(path: path, sourceID: sourceID)
+    }
+
+    static let remoteSourceID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    static func tmdbPath(_ path: String?, size: String, isSourceRelative: Bool = false) -> String? {
+        guard let path, !path.isEmpty else { return nil }
+        if isSourceRelative || path.hasPrefix("http") { return path }
+        return "https://image.tmdb.org/t/p/\(size)\(path.hasPrefix("/") ? "" : "/")\(path)"
+    }
+}
+
+struct CachedRemoteImage<Placeholder: View>: View {
+    let path: String?
+    var sourceID: UUID?
+    @ViewBuilder var placeholder: () -> Placeholder
+
+    @EnvironmentObject private var store: AppStore
+    @State private var image: PlatformImage?
+
+    private struct Request: Equatable {
+        let path: String?
+        let source: MediaSourceConfig?
+        let revision: Int
+    }
+
+    private var request: Request {
+        Request(path: path, source: sourceID.flatMap { store.source(for: $0) },
+                revision: store.artworkRevision)
+    }
+
+    var body: some View {
+        ZStack {
+            placeholder()
+            if let image { Image(platformImage: image).resizable().scaledToFill() }
+        }
+        .task(id: request) {
+            let captured = request
+            image = nil
+            guard let path = captured.path else { return }
+            let id = captured.source?.id ?? CachedImageLoader.remoteSourceID
+            image = CachedImageLoader.cached(path: path, sourceID: id)
+            let source = captured.source.flatMap { try? MediaSourceFactory.make($0) }
+            let loaded = await CachedImageLoader.load(path: path, source: source) {
+                request == captured
+            }
+            guard !Task.isCancelled, request == captured else { return }
+            if let loaded { image = loaded }
+        }
     }
 }
 
@@ -153,15 +262,87 @@ struct PosterTile: View {
 
 // MARK: - 列表筛选
 
-enum LibraryFilter: String, CaseIterable, Identifiable {
-    case all, unwatched, recent
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .all:       return "全部"
-        case .unwatched: return "未观看"
-        case .recent:    return "最近添加"
+typealias LibraryFilter = LibraryQuery.State
+
+struct LibraryToolbar: View {
+    @Binding var sort: LibraryQuery.Sort
+    @Binding var state: LibraryQuery.State
+    @Binding var listMode: Bool
+    var compact = false
+
+    var body: some View {
+        HStack(spacing: 14) {
+            if compact {
+                Menu {
+                    Picker("观看状态", selection: $state) {
+                        ForEach(LibraryQuery.State.allCases) { Text($0.title).tag($0) }
+                    }
+                    Picker("排序", selection: $sort) {
+                        ForEach(LibraryQuery.Sort.allCases) { Text($0.label).tag($0) }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 17, weight: .medium))
+                        .frame(width: 40, height: 40)
+                        .contentShape(Rectangle())
+                }
+                #if os(macOS)
+                .menuStyle(.borderlessButton)
+                #endif
+                .menuIndicator(.hidden)
+                .help("\(state.title) · \(sort.label)")
+                .accessibilityLabel("筛选与排序")
+            } else {
+                Menu {
+                    Picker("排序", selection: $sort) {
+                        ForEach(LibraryQuery.Sort.allCases) { Text($0.label).tag($0) }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 17, weight: .medium))
+                        .frame(width: 40, height: 40)
+                        .contentShape(Rectangle())
+                }
+                #if os(macOS)
+                .menuStyle(.borderlessButton)
+                #endif
+                .menuIndicator(.hidden)
+                .help("排序：\(sort.label)")
+                .accessibilityLabel("排序")
+                .accessibilityValue(sort.label)
+                HStack(spacing: 4) {
+                    ForEach(LibraryQuery.State.allCases) { value in
+                        Button { state = value } label: {
+                            Text(value.title)
+                                .font(.system(size: 15, weight: state == value ? .semibold : .regular))
+                                .foregroundStyle(state == value ? Color.primary : Color.secondary)
+                                .padding(.horizontal, 15)
+                                .frame(height: 36)
+                                .background {
+                                    if state == value {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(Color.primary.opacity(0.10))
+                                    }
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(state == value ? .isSelected : [])
+                    }
+                }
+                .padding(4)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 11))
+            }
+            Button { listMode.toggle() } label: {
+                Label("布局", systemImage: listMode ? "square.grid.2x2" : "list.bullet")
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 16))
+                    .frame(width: 36, height: 40)
+            }
+            .help(listMode ? "切换为海报网格" : "切换为列表")
         }
+        .controlSize(.large)
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(height: 44)
     }
 }
 
@@ -339,6 +520,7 @@ struct HeroCarousel: View {
     @EnvironmentObject private var player: PlayerPresenter
     @Environment(\.colorScheme) private var colorScheme
 
+    @ObservedObject private var metadata = MetadataStore.shared
     @State private var index = 0
     @State private var timer: Task<Void, Never>?
 
@@ -365,6 +547,11 @@ struct HeroCarousel: View {
         }
         .onDisappear { timer?.cancel() }
         .onChange(of: index) { _, _ in syncCurrent() }
+        .onChange(of: entries.map(\.id)) { _, _ in
+            index = 0
+            syncCurrent()
+            startAutoAdvance()
+        }
     }
 
     private func syncCurrent() {
@@ -393,14 +580,14 @@ struct HeroCarousel: View {
 
     private func info(for entry: BrowseEntry) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(entry.title)
+            Text(entry.displayTitle(in: metadata))
                 .font(.system(size: 32, weight: .bold))
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
                 .shadow(color: .black.opacity(0.45), radius: 14, y: 2)
 
-            if let sub = entry.subtitle {
+            if let sub = entry.displaySubtitle(in: store, metadata: metadata) {
                 Text(sub)
                     .font(.system(size: 12.5))
                     .foregroundStyle(.white.opacity(0.82))

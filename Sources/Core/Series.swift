@@ -31,7 +31,7 @@ struct SeriesGroup: Identifiable {
     func nextEpisode(progress: [String: PlaybackRecord]) -> MediaItem? {
         let inProgress = items
             .compactMap { item -> (MediaItem, PlaybackRecord)? in
-                guard let r = progress[item.id], !r.isFinished, r.progress > 0.02 else { return nil }
+                guard let r = progress[item.id], !r.isFinished else { return nil }
                 return (item, r)
             }
             .sorted { $0.1.updatedAt > $1.1.updatedAt }

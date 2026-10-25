@@ -22,3 +22,4 @@ mpv.log
 
 # 临时文件
 *.swp
+.trae-html-share-packages/

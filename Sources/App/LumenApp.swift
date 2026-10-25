@@ -24,6 +24,10 @@ struct LumenApp: App {
         .windowStyle(.titleBar)
         .commands {
             CommandGroup(after: .newItem) {
+                Button("搜索媒体库") {
+                    NotificationCenter.default.post(name: .lumenFind, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
                 Button("扫描全部媒体源") {
                     Task { for s in store.sources { await store.scan(s) } }
                 }
@@ -101,6 +105,12 @@ enum BrowseDestination: Hashable {
     case unwatched
     case watched
     case favorites
+    case search
+    case years
+    case genres
+    case ratings
+    case certifications
+    case allMedia
     case source(UUID)
     case sourceGroup(isServer: Bool)
 
@@ -114,6 +124,12 @@ enum BrowseDestination: Hashable {
         case .unwatched:        return "未观看"
         case .watched:          return "已观看"
         case .favorites:        return "收藏夹"
+        case .search:           return "搜索"
+        case .years:            return "年代"
+        case .genres:           return "类型"
+        case .ratings:          return "评分"
+        case .certifications:   return "分级"
+        case .allMedia:         return "全部影视"
         case .source:           return "文件源"
         case .sourceGroup(let isServer): return isServer ? "影视服务器" : "文件源"
         }
@@ -129,6 +145,12 @@ enum BrowseDestination: Hashable {
         case .unwatched:        return "circle"
         case .watched:          return "checkmark.circle"
         case .favorites:        return "star"
+        case .search:           return "magnifyingglass"
+        case .years:            return "calendar"
+        case .genres:           return "tag"
+        case .ratings:          return "star"
+        case .certifications:   return "checkmark.shield"
+        case .allMedia:         return "square.grid.2x2"
         case .source:           return "folder"
         case .sourceGroup(let isServer): return isServer ? "externaldrive.connected.to.line.below" : "folder"
         }
@@ -149,24 +171,24 @@ private struct SidebarRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 9) {
+            HStack(spacing: 12) {
                 Image(systemName: symbol)
-                    .font(.system(size: 12.5))
-                    .frame(width: 16, alignment: .center)
+                    .font(.system(size: 16))
+                    .frame(width: 21, alignment: .center)
                     .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                 Text(title)
-                    .font(.system(size: 13))
+                    .font(.system(size: 16, weight: isSelected ? .medium : .regular))
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if let trailing {
                     Text(trailing)
-                        .font(.system(size: 11))
+                        .font(.system(size: 13))
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.leading, 8 + indent)
-            .padding(.trailing, 8)
-            .padding(.vertical, 5)
+            .padding(.leading, 10 + indent)
+            .padding(.trailing, 10)
+            .frame(minHeight: 42)
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -188,15 +210,15 @@ private struct SidebarGroupHeader: View {
     var onTapTitle: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             Button {
                 withAnimation(.smooth(duration: 0.18)) { expanded.toggle() }
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .rotationEffect(.degrees(expanded ? 0 : -90))
                     .foregroundStyle(.secondary)
-                    .frame(width: 16, height: 18)
+                    .frame(width: 22, height: 32)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -205,16 +227,16 @@ private struct SidebarGroupHeader: View {
                 if let onTapTitle { onTapTitle() }
                 else { withAnimation(.smooth(duration: 0.18)) { expanded.toggle() } }
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 9) {
                     if !emoji.isEmpty {
-                        Text(emoji).font(.system(size: 13))
+                        Text(emoji).font(.system(size: 17))
                     }
                     Text(title)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(selected ? Color.primary : Color.primary.opacity(0.75))
                     Spacer(minLength: 0)
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 9)
                 .padding(.horizontal, 6)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -236,6 +258,8 @@ private struct SidebarGroupHeader: View {
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @State private var selection: BrowseDestination = .recentlyAdded
+    @State private var searchFocusRequest = 0
+    @State private var selectedTab = "library"
     @State private var libraryExpanded = true
     @State private var sourcesExpanded = true
     @StateObject private var player = PlayerPresenter()
@@ -284,7 +308,7 @@ struct RootView: View {
         #if os(macOS)
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 210, ideal: 222, max: 260)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 300)
         } detail: {
             NavigationStack(path: $navPath) {
                 content
@@ -292,6 +316,10 @@ struct RootView: View {
             }
         }
         .environmentObject(player)
+        .onReceive(NotificationCenter.default.publisher(for: .lumenFind)) { _ in
+            select(.search)
+            searchFocusRequest += 1
+        }
         .onChange(of: player.item) { _, newValue in
             if let item = newValue {
                 PlayerWindowController.shared.show(
@@ -326,26 +354,33 @@ struct RootView: View {
         .onAppear { applyAppearance() }
         .onChange(of: prefs.appearance) { _, _ in applyAppearance() }
         #else
-        TabView {
+        TabView(selection: $selectedTab) {
             BrowseTab(destination: .home)
                 .tabItem { Label("媒体库", systemImage: "play.rectangle.fill") }
+                .tag("library")
 
             NavigationStack {
                 SourceGroupView(isServer: false)
             }
             .tabItem { Label("文件源", systemImage: "folder.fill") }
+            .tag("sources")
 
             NavigationStack {
                 SourceGroupView(isServer: true)
             }
             .tabItem { Label("服务器", systemImage: "server.rack") }
+            .tag("servers")
 
             NavigationStack {
                 SettingsView()
             }
             .tabItem { Label("设置", systemImage: "gearshape.fill") }
+            .tag("settings")
         }
         .environmentObject(player)
+        .onReceive(NotificationCenter.default.publisher(for: .lumenFind)) { _ in
+            selectedTab = "library"
+        }
         .fullScreenCover(item: $player.item) { item in
             PlayerView(item: item)
                 .environmentObject(store)
@@ -372,7 +407,7 @@ struct RootView: View {
     private var sidebar: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 5) {
                     // 媒体库：点标题回首页
                     SidebarGroupHeader(title: "媒体库", emoji: "🎬",
                                        expanded: $libraryExpanded,
@@ -380,7 +415,8 @@ struct RootView: View {
                                        onTapTitle: { select(.home) })
                     if libraryExpanded {
                         ForEach([BrowseDestination.continueWatching, .recentlyAdded,
-                                 .movies, .series, .unwatched, .watched, .favorites],
+                                 .movies, .series, .years, .genres, .ratings, .certifications,
+                                 .unwatched, .watched, .favorites],
                                 id: \.self) { dest in
                             sidebarRow(symbol: dest.symbol, title: dest.title,
                                        selected: selection == dest) {
@@ -455,20 +491,21 @@ struct RootView: View {
     private func sidebarRow(symbol: String, title: String, selected: Bool,
                             trailing: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 9) {
+            HStack(spacing: 12) {
                 Image(systemName: symbol)
-                    .font(.system(size: 12.5))
-                    .frame(width: 17)
+                    .font(.system(size: 16))
+                    .frame(width: 21)
                     .foregroundStyle(selected ? Color.accentColor : Color.secondary)
-                Text(title).font(.system(size: 14))
+                Text(title).font(.system(size: 16, weight: selected ? .medium : .regular))
+                    .lineLimit(1)
                 Spacer(minLength: 0)
                 if let trailing {
-                    Text(trailing).font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                    Text(trailing).font(.system(size: 13)).foregroundStyle(.tertiary)
                 }
             }
             .padding(.leading, 10)
             .padding(.trailing, 8)
-            .padding(.vertical, 5.5)
+            .frame(minHeight: 42)
             .contentShape(Rectangle())
             .background {
                 if selected {
@@ -530,11 +567,11 @@ struct RootView: View {
                 showSettings = true
             } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: "gearshape").font(.system(size: 14))
+Image(systemName: "gearshape").font(.system(size: 17))
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("设置").font(.system(size: 12.5, weight: .medium))
-                        Text("\(store.library.count) 条目 · \(store.sources.count) 源")
-                            .font(.system(size: 10))
+                        Text("设置").font(.system(size: 15, weight: .medium))
+                        Text("\(store.library.count.formatted()) 条目 · \(store.sources.count) 源")
+                            .font(.system(size: 12))
                             .foregroundStyle(.tertiary)
                     }
                     Spacer()
@@ -577,6 +614,16 @@ struct RootView: View {
             }
         case .sourceGroup(let isServer):
             SourceGroupView(isServer: isServer)
+        case .search:
+            LibrarySearchView(focusRequest: searchFocusRequest)
+        case .years:
+            LibraryCategoryView(kind: .years)
+        case .genres:
+            LibraryCategoryView(kind: .genres)
+        case .ratings:
+            LibraryCategoryView(kind: .ratings)
+        case .certifications:
+            LibraryCategoryView(kind: .certifications)
         default:
             BrowseView(destination: selection) { select($0) }
         }
@@ -635,6 +682,11 @@ struct RootView: View {
         case "unwatched": selection = .unwatched
         case "watched":   selection = .watched
         case "favorites": selection = .favorites
+        case "search":    selection = .search
+        case "years":     selection = .years
+        case "genres":    selection = .genres
+        case "ratings":   selection = .ratings
+        case "certifications": selection = .certifications
         default: break
         }
     }
@@ -734,23 +786,23 @@ private struct SourceSidebarRow: View {
     var body: some View {
         HStack(spacing: 0) {
             Button(action: onOpen) {
-                HStack(spacing: 9) {
+                HStack(spacing: 12) {
                     Image(systemName: source.kind.symbol)
-                        .font(.system(size: 12.5))
-                        .frame(width: 17)
+                        .font(.system(size: 16))
+                        .frame(width: 21)
                         .foregroundStyle(selected ? Color.accentColor : Color.secondary)
                     Text(source.name)
-                        .font(.system(size: 14))
+                        .font(.system(size: 16))
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     if !hovering {
                         Text("\(count)")
-                            .font(.system(size: 10.5))
+                            .font(.system(size: 13))
                             .foregroundStyle(.tertiary)
                     }
                 }
                 .padding(.leading, 10)
-                .padding(.vertical, 5.5)
+                .frame(minHeight: 42)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -762,8 +814,8 @@ private struct SourceSidebarRow: View {
                 Button("删除", systemImage: "trash", role: .destructive, action: onDelete)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 18, height: 18)
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 28, height: 32)
                     .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
@@ -799,10 +851,38 @@ struct BrowseTab: View {
 
     var body: some View {
         NavigationStack(path: $nav.path) {
-            BrowseView(destination: destination)
+            tabContent
                 .detailDestinations()
         }
         .environmentObject(nav)   // 挂在栈外面，push 出来的页面也能拿到
+        .onReceive(NotificationCenter.default.publisher(for: .lumenFind)) { _ in
+            if destination == .home {
+                nav.path = NavigationPath()
+                nav.open(.list(.search))
+            }
+        }
+    }
+
+    @ViewBuilder private var tabContent: some View {
+        if destination == .search {
+            LibrarySearchView()
+        } else {
+            VStack(spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 18) {
+                        NavigationLink(value: BrowseRoute.list(.years)) { Label("年代", systemImage: "calendar") }
+                        NavigationLink(value: BrowseRoute.list(.genres)) { Label("类型", systemImage: "tag") }
+                        NavigationLink(value: BrowseRoute.list(.ratings)) { Label("评分", systemImage: "star") }
+                        NavigationLink(value: BrowseRoute.list(.certifications)) { Label("分级", systemImage: "checkmark.shield") }
+                        NavigationLink(value: BrowseRoute.list(.recentlyAdded)) { Label("最近添加", systemImage: "clock") }
+                    }
+                    .padding(.horizontal, 20)
+                }
+                .font(.caption)
+                .padding(.vertical, 10)
+                BrowseView(destination: destination)
+            }
+        }
     }
 }
 
@@ -812,7 +892,17 @@ extension View {
     func detailDestinations() -> some View {
         navigationDestination(for: BrowseRoute.self) { route in
             switch route {
-            case .list(let destination): BrowseView(destination: destination)
+            case .list(let destination):
+                switch destination {
+                case .years: LibraryCategoryView(kind: .years)
+                case .genres: LibraryCategoryView(kind: .genres)
+                case .ratings: LibraryCategoryView(kind: .ratings)
+                case .certifications: LibraryCategoryView(kind: .certifications)
+                case .search: LibrarySearchView()
+                default: BrowseView(destination: destination)
+                }
+            case .category(let category):
+                BrowseView(destination: .allMedia, category: category)
             }
         }
         .navigationDestination(for: DetailTarget.self) { target in
@@ -820,6 +910,9 @@ extension View {
             case .series(let group): MediaDetailView(series: group)
             case .movie(let item):   MediaDetailView(movie: item)
             }
+        }
+        .navigationDestination(for: PersonRoute.self) { route in
+            PersonView(route: route)
         }
     }
 }

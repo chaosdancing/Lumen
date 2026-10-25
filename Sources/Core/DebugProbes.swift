@@ -1,6 +1,7 @@
 import Foundation
 #if os(macOS)
 import AppKit
+import ScreenCaptureKit
 #endif
 
 /// 只在容器里放了对应 flag 文件时才跑，用于无界面验证内核能力
@@ -14,7 +15,7 @@ enum DebugProbes {
     }
 
     /// 诊断：容器里放 `shot.flag`（内容可写 `宽x高`）→ 把主窗口内容截成 shot.png。
-    /// 不依赖系统的屏幕录制权限，用于核对界面版式。
+    /// 使用 ScreenCaptureKit，需要系统屏幕录制权限，用于核对界面版式。
     @MainActor
     static func captureWindowIfRequested() async {
         #if os(macOS)
@@ -59,44 +60,36 @@ enum DebugProbes {
         window.makeKeyAndOrderFront(nil)
         try? await Task.sleep(nanoseconds: 900_000_000)
 
-        guard let view = window.contentView else {
+        guard window.contentView != nil else {
             AppLog.error("SHOT 没有 contentView")
             return
         }
 
-        // 抓自己的窗口不需要屏幕录制权限
-        var cgImage: CGImage?
-        if let shot = CGWindowListCreateImage(.null, .optionIncludingWindow,
-                                              CGWindowID(window.windowNumber),
-                                              [.boundsIgnoreFraming, .bestResolution]) {
-            cgImage = shot
+        // 新 SDK 已移除 CGWindowListCreateImage；SwiftUI/GL 的 layer.render
+        // 也不能可靠截取窗口画面。没有权限时明确失败，不保存空白图。
+        guard CGPreflightScreenCaptureAccess() else {
+            AppLog.error("SHOT 需要在系统设置 → 隐私与安全性 → 屏幕录制中授权")
+            return
         }
-
-        if cgImage == nil {
-            let scale = window.backingScaleFactor
-            let width = Int(view.bounds.width * scale)
-            let height = Int(view.bounds.height * scale)
-            guard width > 0, height > 0,
-                  let ctx = CGContext(data: nil, width: width, height: height,
-                                      bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-                AppLog.error("SHOT 无法创建位图上下文")
+        let cgImage: CGImage
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            guard !Task.isCancelled,
+                  let capturedWindow = content.windows.first(where: {
+                      $0.windowID == CGWindowID(window.windowNumber)
+                  }) else {
+                AppLog.error("SHOT 找不到可截取窗口")
                 return
             }
-            ctx.scaleBy(x: scale, y: scale)
-            view.layoutSubtreeIfNeeded()
-            view.displayIfNeeded()
-            if let layer = view.layer {
-                layer.render(in: ctx)
-            } else {
-                view.draw(view.bounds)
-            }
-            cgImage = ctx.makeImage()
-        }
-
-        guard let cgImage else {
-            AppLog.error("SHOT 生成 CGImage 失败")
+            let filter = SCContentFilter(desktopIndependentWindow: capturedWindow)
+            let config = SCStreamConfiguration()
+            config.width = max(1, Int(capturedWindow.frame.width * window.backingScaleFactor))
+            config.height = max(1, Int(capturedWindow.frame.height * window.backingScaleFactor))
+            config.showsCursor = false
+            cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            guard !Task.isCancelled else { return }
+        } catch {
+            AppLog.error("SHOT 截图失败：\(error.localizedDescription)")
             return
         }
         let rep = NSBitmapImageRep(cgImage: cgImage)
@@ -105,13 +98,18 @@ enum DebugProbes {
             return
         }
         let out = StorePaths.root.appendingPathComponent("shot.png")
-        try? data.write(to: out, options: .atomic)
-        AppLog.info("SHOT 已保存 \(out.path) \(cgImage.width)x\(cgImage.height)")
+        do {
+            try data.write(to: out, options: .atomic)
+            AppLog.info("SHOT 已保存 \(out.path) \(cgImage.width)x\(cgImage.height)")
+        } catch {
+            AppLog.error("SHOT 写入失败：\(error.localizedDescription)")
+        }
         #endif
     }
 
     private static func parseSize(_ spec: String) -> CGSize? {
-        let parts = spec.lowercased().split(separator: "x")
+        let size = spec.split(whereSeparator: \.isWhitespace).first ?? ""
+        let parts = size.lowercased().split(separator: "x")
         guard parts.count == 2,
               let w = Double(parts[0].trimmingCharacters(in: .whitespaces)),
               let h = Double(parts[1].trimmingCharacters(in: .whitespaces)) else { return nil }
@@ -172,6 +170,7 @@ enum DebugProbes {
             let window = NSWindow(contentRect: NSRect(x: 120, y: 160, width: 640, height: 360),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let core = PlayerCore()
+            defer { core.stop() }
             let glView = MPVGLView(core: core)
             glView.frame = NSRect(x: 0, y: 0, width: 640, height: 360)
             window.contentView = glView
@@ -289,6 +288,7 @@ enum DebugProbes {
             AppLog.info("MPV PROBE 开始 \(pb.url.lastPathComponent)")
 
             guard let ctx = mpv_create() else { AppLog.error("MPV PROBE create 失败"); return }
+            defer { mpv_terminate_destroy(ctx) }
             AppLog.info("MPV PROBE create ok")
 
             AppLog.info("MPV PROBE vo=null rc=\(mpvSetOption(ctx, "vo", "null"))")
@@ -311,12 +311,10 @@ enum DebugProbes {
                     let w = mpvGetInt(ctx, "width") ?? -1
                     let h = mpvGetInt(ctx, "height") ?? -1
                     AppLog.info("MPV PROBE 成功 duration=\(String(format: "%.1f", d))s \(w)x\(h) 耗时\((i + 1) * 500)ms")
-                    mpv_terminate_destroy(ctx)
                     return
                 }
             }
             AppLog.error("MPV PROBE 超时：10 秒没拿到 duration")
-            mpv_terminate_destroy(ctx)
         } catch {
             AppLog.error("MPV PROBE 失败：\(error.logDescription)")
         }

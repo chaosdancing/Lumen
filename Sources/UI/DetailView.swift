@@ -21,6 +21,10 @@ struct MediaDetailView: View {
     @State private var revealSpoiler = false
     @State private var overviewExpanded = false
     @State private var viewport: CGSize = CGSize(width: 1100, height: 700)
+    @State private var actionRunning = false
+    @State private var actionMessage: String?
+    @State private var actionFailed = false
+    @State private var actionTask: Task<Void, Never>?
 
     init(series: SeriesGroup) { mode = .series(series) }
     init(movie: MediaItem) { mode = .movie(movie) }
@@ -29,7 +33,7 @@ struct MediaDetailView: View {
 
     private var liveSeries: SeriesGroup? {
         guard case .series(let snapshot) = mode else { return nil }
-        return store.seriesGroups.first { $0.id == snapshot.id } ?? snapshot
+        return DetailMetadataAction.currentSeries(snapshot, in: store) ?? snapshot
     }
 
     private var liveMovie: MediaItem? {
@@ -51,13 +55,23 @@ struct MediaDetailView: View {
     }
 
     private var isFavorite: Bool {
-        guard let id = playTarget?.id else { return false }
+        if let series = liveSeries { return store.isSeriesFavorite(series) }
+        guard let id = liveMovie?.id else { return false }
         return store.isFavorite(id)
     }
 
+    private func toggleFavorite() {
+        if let series = liveSeries {
+            store.toggleSeriesFavorite(series)
+        } else if let id = liveMovie?.id {
+            store.toggleFavorite(id)
+        }
+    }
+
     private var meta: MediaMetadata? {
-        guard let id = posterItem?.id else { return nil }
-        return metaStore.metadata(for: id)
+        guard let item = posterItem else { return nil }
+        if liveSeries != nil { return metaStore.cachedSeriesMetadata(for: item) }
+        return metaStore.metadata(for: item.id)
     }
 
     private var displayTitle: String {
@@ -76,11 +90,16 @@ struct MediaDetailView: View {
         var parts: [String] = []
         if let date = meta?.releaseDate, !date.isEmpty {
             parts.append(date.replacingOccurrences(of: "-", with: "/"))
-        } else if let y = posterItem?.year {
+        } else if liveSeries == nil, let y = posterItem?.year {
             parts.append(String(y))
         }
         if let genres = meta?.genres, !genres.isEmpty {
             parts.append(genres.prefix(3).joined(separator: " / "))
+        }
+        if let minutes = meta?.runtimeMinutes, minutes > 0 { parts.append("\(minutes) 分钟") }
+        if let certification = LibraryQuery.certificationLabel(meta?.certification) {
+            let region = meta?.certificationRegion.map { " (\($0))" } ?? ""
+            parts.append(certification + region)
         }
         return parts.joined(separator: "  ·  ")
     }
@@ -157,15 +176,32 @@ struct MediaDetailView: View {
             .ignoresSafeArea(edges: .top)
             .measureViewport { viewport = $0 }
         }
-        #if os(iOS)
-        #if os(macOS)
-        .toolbar(.hidden, for: .navigationBar)
-        #endif
-        #endif
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("更新元数据", systemImage: "arrow.triangle.2.circlepath") {
+                        performAction(rescan: false)
+                    }
+                    Button(liveSeries == nil ? "重新扫描当前文件" : "重新扫描当前剧集",
+                           systemImage: "arrow.clockwise") {
+                        performAction(rescan: true)
+                    }
+                } label: {
+                    Label("更多操作", systemImage: "ellipsis")
+                }
+                .disabled(actionRunning || posterItem == nil)
+                .help("更新元数据或重新扫描当前内容")
+            }
+        }
         .onAppear { AppLog.info("详情页打开：\(title)") }
-        .task {
+        .onDisappear { actionTask?.cancel() }
+        .task(id: posterItem?.id) {
             if let item = posterItem {
-                await metaStore.load(for: item, in: store)
+                if liveSeries != nil {
+                    _ = await metaStore.seriesMetadata(for: item, in: store)
+                } else {
+                    await metaStore.load(for: item, in: store)
+                }
             }
         }
     }
@@ -280,13 +316,13 @@ struct MediaDetailView: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .disabled(playTarget == nil)
                 .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
 
                 circleButton(isFavorite ? "heart.fill" : "heart") {
-                    if let id = playTarget?.id { store.toggleFavorite(id) }
+                    toggleFavorite()
                 }
-                circleButton("list.bullet") { }
-                circleButton("square.and.arrow.up") { }
+                .accessibilityLabel(isFavorite ? "取消收藏" : "收藏")
             }
             .padding(.top, 2)
 
@@ -372,6 +408,7 @@ struct MediaDetailView: View {
     @ViewBuilder
     private var sections: some View {
         VStack(alignment: .leading, spacing: 28) {
+            metadataStatus
             if overviewText == nil && meta == nil && TMDBClient.apiKey == nil {
                 noMetadataHint
             }
@@ -385,6 +422,80 @@ struct MediaDetailView: View {
             }
 
             fileSection
+        }
+    }
+
+    @ViewBuilder private var metadataStatus: some View {
+        if actionRunning {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text(actionMessage ?? "正在处理…").font(.caption)
+            }
+        } else if let actionMessage {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: actionFailed ? "exclamationmark.triangle" : "checkmark.circle")
+                Text(actionMessage).font(.caption).fixedSize(horizontal: false, vertical: true)
+                if actionFailed {
+                    Button("重试") { performAction(rescan: retryRescan) }
+                        .controlSize(.small)
+                }
+            }
+            .foregroundStyle(actionFailed ? Color.orange : Color.secondary)
+        } else if let item = posterItem, metaStore.inFlight.contains(item.id) {
+            HStack {
+                ProgressView().controlSize(.small)
+                Text("正在读取影视信息…").font(.caption).foregroundStyle(.secondary)
+            }
+        } else if let item = posterItem, let state = metaStore.loadState[item.id] {
+            metadataLoadStatus(state)
+        }
+    }
+
+    @State private var retryRescan = false
+
+    @ViewBuilder private func metadataLoadStatus(_ state: MetadataLoadState) -> some View {
+        if state.isLoading {
+            HStack {
+                ProgressView().controlSize(.small)
+                Text(state.text ?? "正在读取影视信息…").font(.caption)
+            }
+        } else if let message = state.error {
+            HStack(alignment: .top) {
+                Text(message).font(.caption).foregroundStyle(.orange)
+                Button("重试") { performAction(rescan: false) }.controlSize(.small)
+            }
+        } else if meta == nil, let text = state.text {
+            Text(text).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func performAction(rescan: Bool) {
+        guard !actionRunning, let item = posterItem else { return }
+        retryRescan = rescan
+        actionRunning = true
+        actionFailed = false
+        actionMessage = rescan ? "正在重新扫描当前内容…" : "正在更新元数据，本地 NFO 字段优先…"
+        let series = liveSeries
+        actionTask = Task { @MainActor in
+            defer { actionRunning = false }
+            do {
+                if rescan {
+                    _ = try await DetailMetadataAction.rescanAndLoad(item: item, series: series, in: store)
+                } else {
+                    await metaStore.refresh(for: item, in: store)
+                    if series != nil { _ = await metaStore.seriesMetadata(for: item, in: store) }
+                    if let message = metaStore.loadState[item.id]?.error {
+                        throw SourceError.invalidResponse(message)
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                actionMessage = rescan ? "重新扫描完成"
+                    : (meta == nil ? "没有找到可用元数据，请检查本地 NFO 或 TMDB 设置。" : "元数据更新完成")
+            } catch {
+                guard !Task.isCancelled else { return }
+                actionFailed = true
+                actionMessage = error.localizedDescription
+            }
         }
     }
 
@@ -536,7 +647,9 @@ struct MediaDetailView: View {
                 HStack(alignment: .top, spacing: 14) {
                     ForEach(cast) { person in
                         let tile = VStack(spacing: 5) {
-                            CastAvatar(path: person.profilePath)
+                            CastAvatar(path: castImagePath(person.profilePath),
+                                       sourceID: posterItem?.sourceID)
+                                .id(meta?.artworkRefreshID)
                             Text(person.name)
                                 .font(.system(size: 11, weight: .medium))
                                 .lineLimit(1)
@@ -551,7 +664,9 @@ struct MediaDetailView: View {
                         .contentShape(Rectangle())
 
                         if let id = person.tmdbID {
-                            NavigationLink(value: PersonRoute(id: id, name: person.name)) {
+                            NavigationLink(value: PersonRoute(id: id, name: person.name,
+                                                              profilePath: castImagePath(person.profilePath),
+                                                              sourceID: posterItem?.sourceID)) {
                                 tile
                             }
                             .buttonStyle(.plain)
@@ -564,6 +679,12 @@ struct MediaDetailView: View {
                 .padding(.vertical, 2)
             }
         }
+    }
+
+    private func castImagePath(_ path: String?) -> String? {
+        let isLocal = meta?.fieldSources?["cast"] == "nfo"
+            || (meta?.fieldSources?["cast"] == nil && meta?.source == "nfo")
+        return CachedImageLoader.tmdbPath(path, size: "w185", isSourceRelative: isLocal)
     }
 
     /// 集标题：nfo 里的 title 只有在跟剧名不同时才用（否则显示文件名更清楚）
@@ -656,26 +777,51 @@ private struct EpisodeThumb: View {
         .onHover { hovering = $0 }
         .help(item.fileName)
     }
+
+}
+
+// MARK: - Scoped detail metadata action
+
+@MainActor
+enum DetailMetadataAction {
+    static func currentSeries(_ snapshot: SeriesGroup, in store: AppStore) -> SeriesGroup? {
+        let groups = store.seriesGroups
+        if let exact = groups.first(where: { $0.id == snapshot.id }) { return exact }
+        let itemIDs = Set(snapshot.items.map(\.id))
+        return groups.first { group in group.items.contains { itemIDs.contains($0.id) } }
+    }
+
+    static func rescanAndLoad(item: MediaItem, series: SeriesGroup?,
+                              in store: AppStore) async throws -> MediaItem? {
+        if let series { try await store.rescanSeries(series) }
+        else { try await store.rescanItem(item) }
+        try Task.checkCancellation()
+        let affected: MediaItem?
+        if let series {
+            affected = currentSeries(series, in: store)?.posterItem
+        } else {
+            affected = store.library.first { $0.id == item.id }
+        }
+        guard let affected else { return nil }
+        if series != nil {
+            _ = await MetadataStore.shared.seriesMetadata(for: affected, in: store)
+        } else {
+            await MetadataStore.shared.load(for: affected, in: store)
+        }
+        try Task.checkCancellation()
+        return affected
+    }
 }
 
 // MARK: - 演职员头像
 
 private struct CastAvatar: View {
     let path: String?
+    let sourceID: UUID?
 
     var body: some View {
-        Group {
-            if let url = Self.url(path) {
-                AsyncImage(url: url) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().scaledToFill()
-                    } else {
-                        placeholder
-                    }
-                }
-            } else {
-                placeholder
-            }
+        CachedRemoteImage(path: path, sourceID: sourceID) {
+            placeholder
         }
         .frame(width: 60, height: 60)
         .clipShape(Circle())
@@ -691,11 +837,6 @@ private struct CastAvatar: View {
             }
     }
 
-    private static func url(_ path: String?) -> URL? {
-        guard let path, !path.isEmpty else { return nil }
-        if path.hasPrefix("http") { return URL(string: path) }
-        return URL(string: "https://image.tmdb.org/t/p/w185\(path)")
-    }
 }
 
 
@@ -726,10 +867,13 @@ private struct EpisodeStill: View {
         }
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .task(id: item.id) { await load() }
+        .task(id: "\(item.id)#r\(store.artworkRevision)") { await load() }
     }
 
     private func load() async {
+        image = nil
+        tried = false
+        let revision = store.artworkRevision
         guard let config = store.source(for: item.sourceID),
               let source = try? MediaSourceFactory.make(config) else {
             tried = true
@@ -739,24 +883,27 @@ private struct EpisodeStill: View {
         let stem = ((item.path as NSString).lastPathComponent as NSString).deletingPathExtension
 
         // 同一目录只列一次（10 集共用一个 PROPFIND 结果）
-        let names = await StillCache.names(in: dir, source: source)
+        let names = await StillCache.names(in: dir, source: source, revision: revision)
+        guard !Task.isCancelled, revision == store.artworkRevision else { return }
         let candidates = ["\(stem)-thumb.jpg", "\(stem)-thumb.png",
                           "\(stem).jpg", "thumb.jpg", "thumb.png"]
-        guard let hit = candidates.first(where: { c in
-            names.contains { $0.caseInsensitiveCompare(c) == .orderedSame }
-        }) else {
+        guard let hit = candidates.compactMap({ candidate in
+            names.first { $0.caseInsensitiveCompare(candidate) == .orderedSame }
+        }).first else {
             tried = true
             return
         }
         let path = dir.isEmpty ? hit : "\(dir)/\(hit)"
 
-        if let cached = StillCache.image(path) {
+        let cacheKey = "\(item.sourceID.uuidString)#r\(revision)#\(path)"
+        if let cached = StillCache.image(cacheKey) {
             image = cached
             tried = true
             return
         }
         if let data = try? await source.data(for: path), let img = PlatformImage(data: data) {
-            StillCache.store(img, path: path)
+            guard !Task.isCancelled, revision == store.artworkRevision else { return }
+            StillCache.store(img, path: cacheKey)
             withAnimation(.easeOut(duration: 0.15)) { image = img }
         } else {
             AppLog.error("EpisodeStill 取图失败：\(path)")
@@ -773,18 +920,20 @@ enum StillCache {
     private static var inflight: [String: Task<[String], Never>] = [:]
     private static var images: [String: PlatformImage] = [:]
 
-    static func names(in dir: String, source: MediaSource) async -> [String] {
-        if let hit = listings[dir] { return hit }
-        if let task = inflight[dir] { return await task.value }
+    static func names(in dir: String, source: MediaSource, revision: Int) async -> [String] {
+        let key = "\(source.config.id.uuidString)#r\(revision)#\(dir)"
+        if let hit = listings[key] { return hit }
+        if let task = inflight[key] { return await task.value }
 
         let task = Task<[String], Never> {
             guard let entries = try? await source.list(path: dir) else { return [] }
             return entries.filter { !$0.isDirectory }.map(\.name)
         }
-        inflight[dir] = task
+        inflight[key] = task
         let names = await task.value
-        inflight[dir] = nil
-        if !names.isEmpty { listings[dir] = names }   // 失败/空不缓存
+        inflight[key] = nil
+        if listings.count > 240 { listings.removeAll() }
+        if !names.isEmpty { listings[key] = names }   // 失败/空不缓存
         return names
     }
 

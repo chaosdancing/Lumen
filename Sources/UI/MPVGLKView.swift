@@ -99,6 +99,7 @@ final class MPVGLKView: UIView, MPVRenderHost {
             return false
         }
         renderContext = created
+        if displayLink == nil { startDisplayLink() }
 
         let callback: @convention(c) (UnsafeMutableRawPointer?) -> Void = { ctx in
             guard let ctx else { return }
@@ -175,15 +176,14 @@ final class MPVGLKView: UIView, MPVRenderHost {
     }
 
     func destroyRenderContext() {
-        guard let ctx = renderContext else { return }
-        renderContext = nil
         displayLink?.invalidate()
         displayLink = nil
+        guard let ctx = renderContext else { return }
+        renderContext = nil
         mpv_render_context_free(ctx)
     }
 
     deinit {
-        displayLink?.invalidate()
         destroyRenderContext()
     }
 }
@@ -197,6 +197,11 @@ struct MPVSurfaceiOS: UIViewRepresentable {
 
     func updateUIView(_ uiView: MPVGLKView, context: Context) {
         uiView.core = core
+    }
+
+    static func dismantleUIView(_ uiView: MPVGLKView, coordinator: ()) {
+        uiView.destroyRenderContext()
+        uiView.core = nil
     }
 }
 #endif

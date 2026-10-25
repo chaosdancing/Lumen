@@ -183,11 +183,28 @@ enum MediaItemParser {
     private static func chineseNumber(_ s: String) -> Int? {
         let map: [Character: Int] = ["一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
                                      "六": 6, "七": 7, "八": 8, "九": 9, "十": 10]
-        if s == "十" { return 10 }
-        if s.count == 1 { return map[s.first!] }
-        if s.count == 2, s.hasSuffix("十"), let d = map[s.first!] { return d * 10 }
-        if s.count == 3, s.hasPrefix("十"), let d = map[Array(s)[1]] { return 10 + d }
-        return nil
+        if let value = Int(s) { return value }
+        if s.count == 1 { return s.first.flatMap { map[$0] } }
+
+        let parts = s.split(separator: "十", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        let tens: Int
+        if parts[0].isEmpty {
+            tens = 1
+        } else if parts[0].count == 1, let digit = parts[0].first.flatMap({ map[$0] }) {
+            tens = digit
+        } else {
+            return nil
+        }
+        let ones: Int
+        if parts[1].isEmpty {
+            ones = 0
+        } else if parts[1].count == 1, let digit = parts[1].first.flatMap({ map[$0] }) {
+            ones = digit
+        } else {
+            return nil
+        }
+        return tens * 10 + ones
     }
 
     private static func extractYear(_ s: String) -> Int? {

@@ -61,7 +61,7 @@ struct FolderList: View {
                             NavigationLink(value: FolderRoute(path: entry.path)) {
                                 row(entry)
                             }
-                        } else {
+                        } else if MediaFileType.isVideo(entry.name) {
                             Button {
                                 play(entry)
                             } label: {
@@ -71,6 +71,8 @@ struct FolderList: View {
                             .contextMenu {
                                 Button("播放") { play(entry) }
                             }
+                        } else {
+                            row(entry)
                         }
                     }
                 }
@@ -93,7 +95,8 @@ struct FolderList: View {
 
     private func row(_ entry: RemoteEntry) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: entry.isDirectory ? "folder.fill" : "film")
+            Image(systemName: entry.isDirectory ? "folder.fill" :
+                    (MediaFileType.isVideo(entry.name) ? "film" : "doc"))
                 .font(.system(size: 17))
                 .foregroundStyle(entry.isDirectory ? Color.accentColor : Color.secondary)
                 .frame(width: 22)
@@ -126,6 +129,7 @@ struct FolderList: View {
     }
 
     private func play(_ entry: RemoteEntry) {
+        guard !entry.isDirectory, MediaFileType.isVideo(entry.name) else { return }
         let item = MediaItemParser.parse(entry: entry, sourceID: source.id)
         player.play(item)
     }

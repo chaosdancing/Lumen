@@ -19,10 +19,9 @@ typealias PlatformImage = UIImage
 final class ArtworkStore: ObservableObject {
     /// 解析规则版本：改了封面查找逻辑就 +1，旧缓存自动失效
     /// （曾经因为规则升级后仍命中旧缓存，导致单集封面一直是同一张）
-    private static let cacheVersion = "v3"
+    private static let cacheVersion = "v4"
 
     private var memory: [String: PlatformImage] = [:]
-    private var failed: Set<String> = []
 
     private var cacheDir: URL {
         let dir = StorePaths.root.appendingPathComponent("Caches/Artwork", isDirectory: true)
@@ -30,62 +29,141 @@ final class ArtworkStore: ObservableObject {
         return dir
     }
 
-    func cached(_ itemID: String, variant: ArtworkVariant = .poster) -> PlatformImage? {
-        memory["\(Self.cacheVersion)#\(itemID)#\(variantKey(variant))"]
+    func cached(_ itemID: String, variant: ArtworkVariant = .poster,
+                revision: Int = 0) -> PlatformImage? {
+        memory[cacheKey(itemID: itemID, variant: variant, revision: revision)]
+    }
+
+    func requestIdentity(for item: MediaItem, variant: ArtworkVariant = .poster,
+                         in store: AppStore) -> String {
+        let metadata = MetadataStore.shared.artworkMetadata(for: item)
+        let config = store.source(for: item.sourceID)
+        let fingerprint = config.map(MetadataCache.sourceFingerprint) ?? ""
+        let posterSource = metadata?.fieldSources?["posterPath"] ?? metadata?.source ?? ""
+        let backdropSource = metadata?.fieldSources?["backdropPath"] ?? metadata?.source ?? ""
+        let serverPoster = store.posterURL(for: item)?.absoluteString ?? ""
+        let fields: [String] = [fingerprint,
+                      metadata?.posterPath ?? "", metadata?.backdropPath ?? "",
+                      posterSource, backdropSource, serverPoster,
+                      metadata?.artworkRefreshID ?? "",
+                      TMDBClient.language, String(Preferences.shared.preferNFO)]
+        let resolved = MetadataCache.hash(String(decoding: (try? JSONEncoder().encode(fields)) ?? Data(), as: UTF8.self))
+        return cacheKey(itemID: item.id, variant: variant, revision: store.artworkRevision) + "#\(resolved)"
+    }
+
+    func cached(for item: MediaItem, variant: ArtworkVariant = .poster,
+                in store: AppStore) -> PlatformImage? {
+        memory[requestIdentity(for: item, variant: variant, in: store)]
     }
 
     func image(for item: MediaItem, variant: ArtworkVariant = .poster,
                in store: AppStore) async -> PlatformImage? {
-        let key = "\(Self.cacheVersion)#\(item.id)#\(variantKey(variant))"
+        let requestRevision = store.artworkRevision
+        let requestSource = store.source(for: item.sourceID)
+        guard !Task.isCancelled, requestSource != nil else { return nil }
+        let key = requestIdentity(for: item, variant: variant, in: store)
         if let hit = memory[key] { return hit }
-        if failed.contains(key) { return nil }
 
         let file = cacheDir.appendingPathComponent(Self.hash(key) + ".img")
         let useDiskCache = (variant != .thumb)   // 缩略图不落盘，避免旧规则缓存一直生效
         if useDiskCache, let data = try? Data(contentsOf: file), let img = PlatformImage(data: data) {
             memory[key] = img
             return img
+        } else if useDiskCache {
+            try? FileManager.default.removeItem(at: file)
         }
 
-        var data: Data?
-        let preferLocal = Preferences.shared.preferLocalPoster || variant != .poster
+        func accept(_ data: Data?) -> PlatformImage? {
+            guard !Task.isCancelled, requestRevision == store.artworkRevision,
+                  requestSource == store.source(for: item.sourceID),
+                  key == requestIdentity(for: item, variant: variant, in: store) else { return nil }
+            guard let data, let image = PlatformImage(data: data) else { return nil }
+            memory[key] = image
+            if useDiskCache { try? data.write(to: file, options: .atomic) }
+            return image
+        }
 
-        // 1. 片源目录里已有的图片（-poster / -fanart / -landscape / -thumb / poster.jpg …）
-        if preferLocal,
-           let path = await LocalArtworkResolver.shared.path(for: item, variant: variant, in: store),
-           let raw = try? await store.data(for: item, path: path) {
-            data = raw
+        func localData() async -> Data? {
+            guard let path = await LocalArtworkResolver.shared.path(for: item, variant: variant,
+                                                                     in: store) else { return nil }
+            let sharedFile = MetadataCache.imageURL(identity: MetadataCache.imageIdentity(path: path, sourceID: item.sourceID))
+            if let data = try? Data(contentsOf: sharedFile), PlatformImage(data: data) != nil { return data }
+            guard let data = try? await store.data(for: item, path: path),
+                  !Task.isCancelled, requestRevision == store.artworkRevision,
+                  requestSource == store.source(for: item.sourceID),
+                  key == requestIdentity(for: item, variant: variant, in: store) else { return nil }
+            if PlatformImage(data: data) != nil { try? data.write(to: sharedFile, options: .atomic) }
+            return data
         }
-        // 2. 媒体服务器官方海报（只对 poster 有意义）
-        if data == nil, variant == .poster, let url = store.posterURL(for: item) {
-            data = try? await Self.fetch(url)
+
+        func metadataData(path: String?, url: URL?) async -> Data? {
+            if let url, url.isFileURL { return try? Data(contentsOf: url) }
+            if let metadata = MetadataStore.shared.artworkMetadata(for: item),
+               (metadata.fieldSources?[variant == .backdrop ? "backdropPath" : "posterPath"] == "nfo"
+                || (metadata.fieldSources == nil && metadata.source == "nfo")),
+               let path, !path.hasPrefix("http") {
+                return try? await store.data(for: item, path: path)
+            }
+            guard let url else { return nil }
+            return try? await Self.fetch(url)
         }
-        // 3. TMDB 刮削图
-        if data == nil, variant == .poster,
-           let url = MetadataStore.shared.cachedPosterURL(for: item.id) {
-            data = try? await Self.fetch(url)
+
+        let preferLocal = Preferences.shared.preferLocalPoster
+        let metadata = MetadataStore.shared.artworkMetadata(for: item)
+
+        // 本地偏好只改变顺序；每份字节都先解码，坏图不会阻塞后续来源。
+        if preferLocal, let image = accept(await localData()) {
+            return image
         }
-        // 3.5 缩略图本地没有 → 用刮削到的海报兜底
-        if data == nil, variant == .thumb,
-           let url = MetadataStore.shared.cachedPosterURL(for: item.id) {
-            data = try? await Self.fetch(url)
+
+        switch variant {
+        case .poster:
+            if let url = store.posterURL(for: item),
+               let image = accept(try? await Self.fetch(url)) {
+                return image
+            }
+            if let image = accept(await metadataData(
+                path: metadata?.posterPath,
+                url: MetadataStore.shared.cachedPosterURL(for: item)
+            )) {
+                return image
+            }
+        case .backdrop:
+            if let image = accept(await metadataData(
+                path: metadata?.backdropPath,
+                url: MetadataStore.shared.backdropURL(for: item)
+            )) {
+                return image
+            }
+        case .thumb:
+            if let image = accept(await metadataData(
+                path: metadata?.posterPath,
+                url: MetadataStore.shared.cachedPosterURL(for: item)
+            )) {
+                return image
+            }
         }
-        // 4. 横版图缺失时退回竖版海报
-        if data == nil, variant == .backdrop {
+
+        if !preferLocal, let image = accept(await localData()) {
+            return image
+        }
+
+        // 横版图的所有来源都失败后再退回竖版海报。
+        if variant == .backdrop {
             return await image(for: item, variant: .poster, in: store)
         }
-        // 5. 本地视频抽帧
-        if data == nil, variant != .backdrop, store.source(for: item.sourceID)?.kind == .local {
-            data = await frameThumbnail(for: item, in: store)
+
+        if store.source(for: item.sourceID)?.kind == .local,
+           let image = accept(await frameThumbnail(for: item, in: store)) {
+            return image
         }
 
-        guard let data, let img = PlatformImage(data: data) else {
-            failed.insert(key)
-            return nil
-        }
-        memory[key] = img
-        if useDiskCache { try? data.write(to: file, options: .atomic) }
-        return img
+        return nil
+    }
+
+    private func cacheKey(itemID: String, variant: ArtworkVariant, revision: Int) -> String {
+        let preference = Preferences.shared.preferLocalPoster ? "local" : "remote"
+        return "\(Self.cacheVersion)#\(itemID)#\(variantKey(variant))#\(preference)#r\(revision)"
     }
 
     private func variantKey(_ v: ArtworkVariant) -> String {
@@ -97,7 +175,7 @@ final class ArtworkStore: ObservableObject {
     }
 
     /// 列表刷新（重新扫描）后清掉失败记录，允许重试
-    func resetFailures() { failed.removeAll() }
+    func resetFailures() {}
 
     // MARK: - 具体来源
 

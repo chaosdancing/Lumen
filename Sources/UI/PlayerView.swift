@@ -88,6 +88,8 @@ struct PlayerView: View {
     @State private var subtitleError: String?
     @State private var seekHint: String?
     @State private var seekHintTask: Task<Void, Never>?
+    @State private var loadSession = UUID()
+    @State private var subtitleRequestID = UUID()
 
     private var title: String { item.seriesTitle ?? item.title }
     private var subtitleLine: String? {
@@ -177,8 +179,14 @@ struct PlayerView: View {
         }
         .onDisappear {
             saveProgress()
+            invalidatePlaybackSession()
             engine.stop()
             hideTask?.cancel()
+            seekHintTask?.cancel()
+            #if os(macOS)
+            PlayerWindowController.shared.onSingleClick = nil
+            PlayerWindowController.shared.onDoubleClick = nil
+            #endif
         }
     }
 
@@ -410,6 +418,7 @@ struct PlayerView: View {
 
     /// 选容器里的字幕轨（交给 mpv / AVPlayer 渲染），自己的叠加层要停掉
     private func pickEmbedded(_ track: MediaTrack) {
+        subtitleRequestID = UUID()
         selectedSubtitle = nil
         cues = []
         subtitleError = nil
@@ -417,6 +426,7 @@ struct PlayerView: View {
     }
 
     private func clearSubtitles() {
+        subtitleRequestID = UUID()
         selectedSubtitle = nil
         cues = []
         subtitleError = nil
@@ -472,18 +482,30 @@ struct PlayerView: View {
         .allowsHitTesting(false)
     }
 
-    private func loadSubtitles() async {
-        subtitleCandidates = await store.subtitleCandidates(for: item)
+    private func loadSubtitles(session: UUID) async {
+        let selectionVersion = subtitleRequestID
+        let candidates = await store.subtitleCandidates(for: item)
+        guard !Task.isCancelled, loadSession == session else { return }
+        subtitleCandidates = candidates
         subtitleError = nil
-        guard prefs.subtitleAutoLoad, let first = subtitleCandidates.first else { return }
-        await selectSubtitle(first)
+        guard subtitleRequestID == selectionVersion,
+              prefs.subtitleAutoLoad,
+              let first = candidates.first else { return }
+        await selectSubtitle(first, session: session)
     }
 
-    private func selectSubtitle(_ path: String) async {
+    private func selectSubtitle(_ path: String, session: UUID? = nil) async {
+        let expectedSession = session ?? loadSession
+        let requestID = UUID()
+        subtitleRequestID = requestID
         // 外挂字幕走自己的解析/渲染，容器里的字幕轨要关掉，不然两层字幕叠一起
         engine.disableEmbeddedSubtitles()
         selectedSubtitle = path
         let parsed = await store.subtitleCues(for: item, path: path)
+        guard !Task.isCancelled,
+              loadSession == expectedSession,
+              subtitleRequestID == requestID,
+              selectedSubtitle == path else { return }
         if parsed.isEmpty {
             subtitleError = "字幕解析失败：\((path as NSString).lastPathComponent)"
             cues = []
@@ -505,7 +527,15 @@ struct PlayerView: View {
 
     private func captureScreenshot() {
         guard let target else { return }
-        let asset = AVURLAsset(url: target.url)
+        guard engine.backend == .av else {
+            shotMessage = "截图失败：mpv 后端暂不支持截图"
+            return
+        }
+        var options: [String: Any] = [AVURLAssetPreferPreciseDurationAndTimingKey: true]
+        if !target.headers.isEmpty {
+            options["AVURLAssetHTTPHeaderFieldsKey"] = target.headers
+        }
+        let asset = AVURLAsset(url: target.url, options: options)
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.requestedTimeToleranceBefore = .zero
@@ -525,12 +555,16 @@ struct PlayerView: View {
                     ? rep.representation(using: .png, properties: [:])
                     : rep.representation(using: .jpeg, properties: [.compressionFactor: 0.9])
                 #else
-                let data = UIImage(cgImage: cg).jpegData(compressionQuality: 0.9)
+                let image = UIImage(cgImage: cg)
+                let data = prefs.screenshotFormat == "png"
+                    ? image.pngData()
+                    : image.jpegData(compressionQuality: 0.9)
                 #endif
-                if let data { try data.write(to: url) }
+                guard let data else { throw CocoaError(.fileWriteUnknown) }
+                try data.write(to: url)
                 withAnimation { shotMessage = "已保存到 \(folder.lastPathComponent)" }
             } catch {
-                shotMessage = "截图失败"
+                shotMessage = "截图失败：\(error.localizedDescription)"
             }
         }
     }
@@ -557,40 +591,51 @@ struct PlayerView: View {
     }
 
     private func load() async {
+        let session = loadSession
         do {
             let t = try await store.playbackTarget(for: item)
+            guard !Task.isCancelled, loadSession == session else { return }
             target = t
             let resume = prefs.resumePlayback ? (store.record(for: item.id)?.position ?? 0) : 0
             engine.load(t, startAt: resume)
-            if prefs.defaultRate != 1.0 { engine.setRate(Float(prefs.defaultRate)) }
+            guard !Task.isCancelled, loadSession == session else {
+                engine.stop()
+                return
+            }
+            rate = Float(prefs.defaultRate)
+            engine.setRate(rate)
             if prefs.autoMarkWatched {
-                NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
-                                                       object: nil, queue: .main) { _ in
-                    Task { @MainActor in
-                        if let d = engine.player.currentItem?.duration.seconds, d.isFinite, d > 0 {
-                            store.record(itemID: item.id, position: d, duration: d)
-                        }
+                let itemID = item.id
+                engine.onPlaybackEnded = { [weak engine] in
+                    guard let engine else { return }
+                    let d = engine.duration
+                    if d.isFinite, d > 0 {
+                        store.record(itemID: itemID, position: d, duration: d)
                     }
                 }
             }
             scheduleHide()
-            await loadSubtitles()
-            await runTrackProbeIfRequested()
+            await loadSubtitles(session: session)
+            guard !Task.isCancelled, loadSession == session else { return }
+            await runTrackProbeIfRequested(session: session)
         } catch {
+            guard !Task.isCancelled, loadSession == session else { return }
             loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     /// 诊断：容器里放 `track-test.flag` → 播起来 2 秒后自动切到第 2 条音轨 + 第 1 条字幕，日志里核对 aid/sid
-    private func runTrackProbeIfRequested() async {
+    private func runTrackProbeIfRequested(session: UUID) async {
         let flag = StorePaths.root.appendingPathComponent("track-test.flag")
         guard FileManager.default.fileExists(atPath: flag.path) else { return }
         try? FileManager.default.removeItem(at: flag)
         try? await Task.sleep(nanoseconds: 2_000_000_000)
+        guard !Task.isCancelled, loadSession == session else { return }
         if engine.audioTracks.count > 1 {
             let target = engine.audioTracks[1]
             engine.selectAudio(target)
             try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled, loadSession == session else { return }
             AppLog.info("TRACK PROBE 切音轨 → \(target.title) aid=\(engine.mpvString("aid") ?? "nil")")
         } else {
             AppLog.info("TRACK PROBE 只有 \(engine.audioTracks.count) 条音轨")
@@ -598,6 +643,7 @@ struct PlayerView: View {
         if let sub = engine.subtitleTracks.first {
             pickEmbedded(sub)
             try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, loadSession == session else { return }
             AppLog.info("TRACK PROBE 切字幕 → \(sub.title) sid=\(engine.mpvString("sid") ?? "nil")")
         }
         // 截图核对用：别让控制条自己收起来
@@ -608,8 +654,16 @@ struct PlayerView: View {
 
     private func closePlayer() {
         saveProgress()
+        invalidatePlaybackSession()
         engine.stop()
         presenter.close()
+    }
+
+    private func invalidatePlaybackSession() {
+        loadSession = UUID()
+        subtitleRequestID = UUID()
+        engine.onPlaybackEnded = nil
+        target = nil
     }
 
     private func saveProgress() {
