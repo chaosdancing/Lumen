@@ -19,7 +19,7 @@ typealias PlatformImage = UIImage
 final class ArtworkStore: ObservableObject {
     /// 解析规则版本：改了封面查找逻辑就 +1，旧缓存自动失效
     /// （曾经因为规则升级后仍命中旧缓存，导致单集封面一直是同一张）
-    private static let cacheVersion = "v3"
+    private static let cacheVersion = "v4"
 
     private var memory: [String: PlatformImage] = [:]
     private var failed: Set<String> = []
@@ -50,8 +50,14 @@ final class ArtworkStore: ObservableObject {
         var data: Data?
         let preferLocal = Preferences.shared.preferLocalPoster || variant != .poster
 
+        // 横版头图优先用匹配过片名的 TMDB 剧照。目录里的通用 fanart.jpg
+        // 可能属于另一部片，放在网络匹配失败后再回退。
+        if variant == .backdrop,
+           let url = await MetadataStore.shared.bestBackdropURL(for: item) {
+            data = try? await Self.fetch(url)
+        }
         // 1. 片源目录里已有的图片（-poster / -fanart / -landscape / -thumb / poster.jpg …）
-        if preferLocal,
+        if data == nil, preferLocal,
            let path = await LocalArtworkResolver.shared.path(for: item, variant: variant, in: store),
            let raw = try? await store.data(for: item, path: path) {
             data = raw

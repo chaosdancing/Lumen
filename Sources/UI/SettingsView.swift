@@ -295,8 +295,8 @@ private struct SourcesPane: View {
                     }
                     .buttonStyle(.borderless)
                     Button("保存") {
-                        TMDBClient.setAPIKey(keyText.trimmingCharacters(in: .whitespacesAndNewlines))
-                        message = "已保存"
+                        message = TMDBClient.setAPIKey(keyText.trimmingCharacters(in: .whitespacesAndNewlines))
+                            ? "已保存" : "钥匙串保存失败，请检查应用签名"
                     }
                     .controlSize(.small)
                 }
@@ -342,17 +342,22 @@ private struct SourcesPane: View {
 // MARK: - 同步（无账号体系）
 
 private struct SyncPane: View {
+    @EnvironmentObject private var store: AppStore
+
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: "icloud.slash").font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("Lumen 没有账号体系，不做跨设备同步")
+            Image(systemName: store.iCloudProgressAvailable ? "icloud" : "icloud.slash")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(store.iCloudProgressAvailable ? Color.green : Color.secondary)
+            Text(store.iCloudProgressAvailable ? "观看记录已接入 iCloud" : "iCloud 观看记录暂不可用")
                 .font(.system(size: 13, weight: .medium))
-            Text("VidHub 靠登录 VidHub 账号同步观看进度与收藏。\n要做到同样的效果需要自建后端或接 iCloud，当前未实现。")
+            Text("播放进度先保存在本机，再同步到使用同一 Apple 账户的 Mac 和 iPad。两端需扫描到同一影片；其他资料仍保存在本机。")
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
+            Button("立即同步") { store.flushProgressSync() }
+                .padding(.top, 8)
         }
         .padding(.top, 60)
     }

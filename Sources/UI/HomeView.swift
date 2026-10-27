@@ -69,6 +69,71 @@ enum BrowseEntry: Identifiable {
 /// 「全部」列表页的路由
 enum BrowseRoute: Hashable {
     case list(BrowseDestination)
+    case category(LibraryQuery.Category)
+}
+
+extension BrowseEntry {
+    @MainActor
+    func metadata(in metadata: MetadataStore) -> MediaMetadata? {
+        switch self {
+        case .movie(let item):
+            return metadata.metadata(for: item.id)
+        case .series(let group):
+            if let poster = group.posterItem, let value = metadata.metadata(for: poster.id) {
+                return value
+            }
+            return group.items.lazy.compactMap { metadata.metadata(for: $0.id) }.first
+        }
+    }
+
+    @MainActor
+    func queryItem(in store: AppStore, metadata: MetadataStore) -> LibraryQuery.Item {
+        let meta = self.metadata(in: metadata)
+        let mediaItems: [MediaItem]
+        switch self {
+        case .movie(let item): mediaItems = [item]
+        case .series(let group): mediaItems = group.items
+        }
+        let premiereYear = meta?.releaseDate.flatMap { Int($0.prefix(4)) }
+        let year: Int?
+        switch self {
+        case .movie(let item): year = premiereYear ?? item.year
+        case .series: year = premiereYear
+        }
+        let displayName = meta?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let records = mediaItems.compactMap { store.record(for: $0.id) }
+        return LibraryQuery.Item(
+            id: id,
+            title: displayName?.isEmpty == false ? displayName! : title,
+            searchTerms: [meta?.originalTitle, meta?.seriesTitle, title]
+                .compactMap { $0 } + (meta?.cast.map(\.name) ?? []),
+            year: year,
+            genres: meta?.genres ?? [],
+            rating: meta?.rating,
+            certification: meta?.certification,
+            isSeries: mediaItems.first?.seriesTitle != nil,
+            addedAt: sortDate,
+            isWatched: !mediaItems.isEmpty && mediaItems.allSatisfy { store.record(for: $0.id)?.isFinished == true },
+            isContinuing: records.contains(where: \.isInProgress),
+            lastPlayedAt: records.map(\.updatedAt).max()
+        )
+    }
+}
+
+@MainActor
+struct LibrarySnapshot {
+    let entries: [BrowseEntry]
+    let items: [LibraryQuery.Item]
+
+    init(store: AppStore, metadata: MetadataStore) {
+        entries = store.seriesGroups.map(BrowseEntry.series) + store.movieItems.map(BrowseEntry.movie)
+        items = entries.map { $0.queryItem(in: store, metadata: metadata) }
+    }
+
+    func entries(for results: [LibraryQuery.Item]) -> [BrowseEntry] {
+        let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return results.compactMap { byID[$0.id] }
+    }
 }
 
 /// 导航状态：用 ObservableObject 而不是 EnvironmentValues 闭包，
@@ -101,8 +166,26 @@ struct TileTap<Label: View>: View {
 
 // MARK: - 浏览页
 
+private struct BrowseControlLabel: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        Label(title, systemImage: symbol)
+            .font(.system(size: 13, weight: .medium))
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))
+            .contentShape(Capsule())
+    }
+}
+
 struct BrowseView: View {
     let destination: BrowseDestination
+    var searchText = ""
+    var category: LibraryQuery.Category? = nil
     /// 点「全部」时切到对应模块（由 RootView 传进来，因为切换的是侧边栏选中项）
     var onOpenDestination: ((BrowseDestination) -> Void)? = nil
 
@@ -110,7 +193,6 @@ struct BrowseView: View {
     @EnvironmentObject private var player: PlayerPresenter
     @Environment(\.colorScheme) private var colorScheme
 
-    @State private var query = ""
     @State private var filter: LibraryFilter = .all
     @State private var sort: SortOption = .added
     @ObservedObject private var prefs = Preferences.shared
@@ -123,13 +205,15 @@ struct BrowseView: View {
     @State private var heroItem: MediaItem?
 
     enum SortOption: String, CaseIterable, Identifiable {
-        case added, title, year
+        case added, title, year, rating, certification
         var id: String { rawValue }
         var label: String {
             switch self {
             case .added: return "添加时间"
             case .title: return "名称"
             case .year:  return "年份"
+            case .rating: return "评分"
+            case .certification: return "分级"
             }
         }
     }
@@ -161,9 +245,9 @@ struct BrowseView: View {
                 LazyVStack(spacing: 0) {
                     ForEach(entries) { entry in
                         TileTap(target: entry.target) {
-                            BrowseListRow(entry: entry)
+                            BrowseListRow(entry: entry, badge: displayBadge(for: entry))
                         }
-                        Divider().opacity(0.25).padding(.leading, 64)
+                        Divider().opacity(0.25).padding(.leading, 108)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -181,7 +265,7 @@ struct BrowseView: View {
                             PosterTile(title: entry.title,
                                        subtitle: entry.subtitle,
                                        item: entry.posterItem,
-                                       badge: ratingBadge(for: entry) ?? entry.badge,
+                                       badge: displayBadge(for: entry),
                                        progress: progress(for: entry))
                         }
                         .contextMenu {
@@ -215,47 +299,109 @@ struct BrowseView: View {
         }
         .measureViewport { viewport = $0 }
         #if os(iOS)
-        .navigationTitle("")
+        .navigationTitle(category?.title ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbarBackground(.hidden, for: .tabBar)
         #else
-        .navigationTitle(destination.title)
+        .navigationTitle(category?.title ?? destination.title)
         #endif
         .onAppear {
+            if let category {
+                switch category {
+                case .decade: sort = .year
+                case .genre: sort = .title
+                case .rating: sort = .rating
+                case .certification: sort = .certification
+                }
+                return
+            }
+            if destination == .genres {
+                sort = .title
+                return
+            }
+            if destination == .years {
+                sort = .year
+                return
+            }
+            if destination == .ratings {
+                sort = .rating
+                return
+            }
+            if destination == .certifications {
+                sort = .certification
+                return
+            }
             switch prefs.defaultSort {
             case "title": sort = .title
             case "year":  sort = .year
             default:      sort = .added
             }
         }
+        .task(id: destination) {
+            if destination == .genres || destination == .years || destination == .ratings {
+                await metaStore.scrapeAll(items: store.library, in: store)
+            } else if destination == .certifications {
+                await metaStore.fillMissingCertifications(items: store.library)
+            }
+        }
         .toolbar {
-            ToolbarItemGroup {
-                if destination != .home {
-                Menu {
-                    ForEach(SortOption.allCases) { option in
-                        Button {
-                            sort = option
-                        } label: {
-                            Label(option.label, systemImage: sort == option ? "checkmark" : "arrow.up.arrow.down")
-                        }
+            #if os(macOS)
+            if destination == .home {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { onOpenDestination?(.search) } label: {
+                        Label("搜索", systemImage: "magnifyingglass")
                     }
-                } label: {
-                    Label("排序", systemImage: "arrow.up.arrow.down")
+                    .help("搜索媒体库")
                 }
+            }
+            #else
+            if destination == .home {
+                ToolbarItem(placement: .primaryAction) {
+                    NavigationLink(value: BrowseRoute.list(.search)) {
+                        Label("搜索", systemImage: "magnifyingglass")
+                    }
+                }
+            }
+            #endif
+            if destination != .home && destination != .search {
+                ToolbarItem(placement: .primaryAction) {
+                    HStack(spacing: 8) {
+                        Menu {
+                            ForEach(SortOption.allCases) { option in
+                                Button {
+                                    sort = option
+                                } label: {
+                                    Label(option.label, systemImage: sort == option ? "checkmark" : "arrow.up.arrow.down")
+                                }
+                            }
+                        } label: {
+                            BrowseControlLabel(title: sort.label, symbol: "arrow.up.arrow.down")
+                        }
+                        .help("排序：\(sort.label)")
 
-                Picker("", selection: $filter) {
-                    ForEach(LibraryFilter.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .frame(width: 168)
+                        Menu {
+                            ForEach(LibraryFilter.allCases) { option in
+                                Button {
+                                    filter = option
+                                } label: {
+                                    Label(option.title, systemImage: filter == option ? "checkmark" : "line.3.horizontal.decrease")
+                                }
+                            }
+                        } label: {
+                            BrowseControlLabel(title: filter.title, symbol: "line.3.horizontal.decrease")
+                        }
+                        .help("筛选：\(filter.title)")
 
-                Button {
-                    withAnimation(.smooth(duration: 0.2)) { listMode.toggle() }
-                } label: {
-                    Label("布局", systemImage: listMode ? "square.grid.2x2" : "list.bullet")
-                }
+                        Button {
+                            withAnimation(.smooth(duration: 0.2)) { listMode.toggle() }
+                        } label: {
+                            BrowseControlLabel(title: listMode ? "列表" : "网格",
+                                               symbol: listMode ? "list.bullet" : "square.grid.2x2")
+                        }
+                        .help(listMode ? "切换为网格" : "切换为列表")
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -268,9 +414,7 @@ struct BrowseView: View {
     @ViewBuilder private var homeSections: some View {
         let series = store.seriesGroups
         let movies = store.movieItems
-        let activeIDs = Set(store.progress.filter { !$0.value.isFinished && $0.value.progress > 0.02 }.keys)
-        let continueItems = (series.filter { g in g.items.contains { activeIDs.contains($0.id) } }.map { BrowseEntry.series($0) }
-                             + movies.filter { activeIDs.contains($0.id) }.map { BrowseEntry.movie($0) })
+        let continueItems = continuingEntries(series: series, movies: movies)
 
         VStack(alignment: .leading, spacing: 26) {
             if store.library.isEmpty {
@@ -334,7 +478,7 @@ struct BrowseView: View {
                             PosterTile(title: entry.title,
                                        subtitle: entry.subtitle,
                                        item: entry.posterItem,
-                                       badge: ratingBadge(for: entry) ?? entry.badge,
+                                       badge: displayBadge(for: entry),
                                        progress: progress(for: entry),
                                        width: 118)
                         }
@@ -358,9 +502,15 @@ struct BrowseView: View {
 
     private var emptyMessage: String {
         switch destination {
+        case .search:           return searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "暂无推荐内容。" : "没有匹配的名称、原名、剧名或演员。"
         case .home:             return "到「文件源」里添加 NAS、WebDAV 或本地文件夹，扫描后影片会出现在这里。"
         case .continueWatching: return "还没有播放记录。播放过的影片会出现在这里。"
         case .favorites:        return "还没有收藏。在影片上右键可以收藏。"
+        case .genres:           return "还没有类型数据。请配置 TMDB API Key 或在 NFO 中提供类型。"
+        case .years:            return "还没有年代数据。请配置 TMDB API Key，或在文件名/NFO 中提供年份。"
+        case .ratings:          return "还没有评分数据。请配置 TMDB API Key 或提供 NFO 元数据。"
+        case .certifications:   return "还没有分级数据。请配置 TMDB API Key 或在 NFO 中提供分级。"
         case .source:           return "这个源里还没扫到视频。到「文件源」页面点扫描。"
         default:                return "扫描后内容会出现在这里。"
         }
@@ -369,6 +519,15 @@ struct BrowseView: View {
     // MARK: 数据
 
     private var entries: [BrowseEntry] {
+        if destination == .search {
+            let snapshot = LibrarySnapshot(store: store, metadata: metaStore)
+            let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let results = needle.isEmpty
+                ? LibraryQuery.recommendations(snapshot.items)
+                : LibraryQuery.search(snapshot.items, text: needle)
+            return snapshot.entries(for: results)
+        }
+
         let movies = store.movieItems
         let series = store.seriesGroups
         var result: [BrowseEntry] = []
@@ -376,43 +535,43 @@ struct BrowseView: View {
         func movieEntries(_ list: [MediaItem]) -> [BrowseEntry] { list.map { .movie($0) } }
         func seriesEntries(_ list: [SeriesGroup]) -> [BrowseEntry] { list.map { .series($0) } }
 
-        switch destination {
-        case .movies:
-            result = movieEntries(movies)
-        case .series:
-            result = seriesEntries(series)
-        case .continueWatching:
-            let activeIDs = Set(store.progress.filter { !$0.value.isFinished && $0.value.progress > 0.02 }.keys)
-            let activeMovies = movies.filter { activeIDs.contains($0.id) }
-            let activeSeries = series.filter { group in
-                group.items.contains { activeIDs.contains($0.id) }
+        if let category {
+            let snapshot = LibrarySnapshot(store: store, metadata: metaStore)
+            result = snapshot.entries(for: LibraryQuery.results(snapshot.items, category: category))
+        } else {
+            switch destination {
+            case .movies:
+                result = movieEntries(movies)
+            case .series:
+                result = seriesEntries(series)
+            case .genres, .years, .ratings, .certifications:
+                // 这四个入口由 LibraryCategoryView 先展示分类桶。
+                result = []
+            case .continueWatching:
+                result = continuingEntries(series: series, movies: movies)
+            case .home, .recentlyAdded, .allMedia:
+                result = seriesEntries(series) + movieEntries(movies)
+            case .unwatched:
+                result = seriesEntries(series.filter { group in
+                    group.items.contains { store.record(for: $0.id) == nil }
+                }) + movieEntries(movies.filter { store.record(for: $0.id) == nil })
+            case .watched:
+                result = seriesEntries(series.filter { group in
+                    group.items.allSatisfy { store.record(for: $0.id)?.isFinished == true }
+                }) + movieEntries(movies.filter { store.record(for: $0.id)?.isFinished == true })
+            case .favorites:
+                result = seriesEntries(series.filter { group in
+                    group.items.contains { store.isFavorite($0.id) }
+                }) + movieEntries(movies.filter { store.isFavorite($0.id) })
+            case .source(let id):
+                result = seriesEntries(series.filter { group in
+                    group.items.allSatisfy { $0.sourceID == id }
+                }) + movieEntries(movies.filter { $0.sourceID == id })
+            case .search, .sourceGroup:
+                result = []
             }
-            result = seriesEntries(activeSeries) + movieEntries(activeMovies)
-        case .home, .recentlyAdded:
-            result = seriesEntries(series) + movieEntries(movies)
-        case .unwatched:
-            result = seriesEntries(series.filter { group in
-                group.items.contains { store.record(for: $0.id) == nil }
-            }) + movieEntries(movies.filter { store.record(for: $0.id) == nil })
-        case .watched:
-            result = seriesEntries(series.filter { group in
-                group.items.allSatisfy { store.record(for: $0.id)?.isFinished == true }
-            }) + movieEntries(movies.filter { store.record(for: $0.id)?.isFinished == true })
-        case .favorites:
-            result = seriesEntries(series.filter { group in
-                group.items.contains { store.isFavorite($0.id) }
-            }) + movieEntries(movies.filter { store.isFavorite($0.id) })
-        case .source(let id):
-            result = seriesEntries(series.filter { group in
-                group.items.allSatisfy { $0.sourceID == id }
-            }) + movieEntries(movies.filter { $0.sourceID == id })
-        case .sourceGroup:
-            result = []
         }
 
-        if !query.isEmpty {
-            result = result.filter { $0.title.localizedCaseInsensitiveContains(query) }
-        }
         if filter == .unwatched {
             result = result.filter { entry in
                 switch entry {
@@ -422,20 +581,71 @@ struct BrowseView: View {
             }
         }
 
+        if destination == .continueWatching && sort == .added { return result }
         switch sort {
         case .added: result.sort { $0.sortDate > $1.sortDate }
         case .title: result.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         case .year:
-            result.sort { ($0.posterItem?.year ?? 0) > ($1.posterItem?.year ?? 0) }
+            result.sort { (displayYear(for: $0) ?? 0) > (displayYear(for: $1) ?? 0) }
+        case .rating:
+            result.sort { (metadata(for: $0)?.rating ?? 0) > (metadata(for: $1)?.rating ?? 0) }
+        case .certification:
+            result.sort {
+                let lhs = metadata(for: $0)?.certification ?? ""
+                let rhs = metadata(for: $1)?.certification ?? ""
+                if lhs == rhs { return $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+                return lhs.localizedStandardCompare(rhs) == .orderedAscending
+            }
         }
         return result
     }
 
+    private func continuingEntries(series: [SeriesGroup], movies: [MediaItem]) -> [BrowseEntry] {
+        let records = store.progress
+        let activeIDs = Set(store.continueWatching.map(\.id))
+        let groups = series.filter { group in group.items.contains { activeIDs.contains($0.id) } }
+        let activeMovies = movies.filter { activeIDs.contains($0.id) }
+        let entries = groups.map(BrowseEntry.series) + activeMovies.map(BrowseEntry.movie)
+        return entries.sorted { lhs, rhs in
+            func lastPlayed(_ entry: BrowseEntry) -> Date {
+                switch entry {
+                case .movie(let item): return records[item.id]?.updatedAt ?? .distantPast
+                case .series(let group):
+                    return group.items.compactMap { item in
+                        guard activeIDs.contains(item.id) else { return nil }
+                        return records[item.id]?.updatedAt
+                    }.max() ?? .distantPast
+                }
+            }
+            return lastPlayed(lhs) > lastPlayed(rhs)
+        }
+    }
+
     private func ratingBadge(for entry: BrowseEntry) -> String? {
         guard prefs.showRatings else { return nil }
-        guard let id = entry.posterItem?.id,
-              let rating = metaStore.metadata(for: id)?.rating, rating > 0 else { return nil }
+        guard let rating = metadata(for: entry)?.rating, rating > 0 else { return nil }
         return String(format: "%.1f", rating)
+    }
+
+    private func metadata(for entry: BrowseEntry) -> MediaMetadata? {
+        entry.metadata(in: metaStore)
+    }
+
+    private func displayBadge(for entry: BrowseEntry) -> String? {
+        if case .genre = category,
+           let genres = metadata(for: entry)?.genres, !genres.isEmpty {
+            return genres.prefix(2).joined(separator: " · ")
+        }
+        if case .decade = category, let year = displayYear(for: entry) {
+            return String(year)
+        }
+        if case .certification = category,
+           let value = metadata(for: entry)?.certification, !value.isEmpty { return value }
+        return ratingBadge(for: entry) ?? entry.badge
+    }
+
+    private func displayYear(for entry: BrowseEntry) -> Int? {
+        entry.queryItem(in: store, metadata: metaStore).year
     }
 
     private func progress(for entry: BrowseEntry) -> Double? {
@@ -453,25 +663,53 @@ struct BrowseView: View {
 
 private struct BrowseListRow: View {
     let entry: BrowseEntry
+    let badge: String?
+    @ObservedObject private var metadata = MetadataStore.shared
     @State private var hovering = false
 
+    private var overview: String? {
+        guard let text = entry.metadata(in: metadata)?.overview?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
     var body: some View {
-        HStack(spacing: 12) {
-            ArtworkView(item: entry.posterItem, cornerRadius: 4)
-                .frame(width: 40, height: 60)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(entry.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+        HStack(alignment: .top, spacing: 16) {
+            ArtworkView(item: entry.posterItem, cornerRadius: 7)
+                .frame(width: 76, height: 114)
+                .shadow(color: .black.opacity(0.16), radius: 3, y: 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(entry.title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .lineLimit(2)
+                    Spacer(minLength: 12)
+                    if let badge {
+                        Text(badge)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 if let sub = entry.subtitle {
-                    Text(sub).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(sub)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.secondary)
+                }
+                if let overview {
+                    Text(overview)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.secondary.opacity(0.9))
+                        .lineLimit(3)
+                        .lineSpacing(2)
                 }
             }
-            Spacer()
-            if let badge = entry.badge {
-                Text(badge).font(.system(size: 11)).foregroundStyle(.tertiary)
-            }
+            .padding(.vertical, 3)
         }
-        .padding(.vertical, 7)
-        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 122, alignment: .leading)
+        .padding(.vertical, 9)
+        .padding(.horizontal, 10)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(hovering ? Color.primary.opacity(0.05) : Color.clear)

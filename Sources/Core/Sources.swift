@@ -21,6 +21,8 @@ extension MediaSource {
 struct PlaybackTarget {
     var url: URL
     var headers: [String: String]
+    /// 保持本地安全作用域在整个播放期间有效。
+    var accessLease: (any MediaSource)? = nil
 }
 
 // MARK: - 本地目录
@@ -53,11 +55,11 @@ final class LocalMediaSource: MediaSource, @unchecked Sendable {
                           relativeTo: nil,
                           bookmarkDataIsStale: &stale)
         self.root = url
-        if url.startAccessingSecurityScopedResource() {
-            self.needsScope = true
-        } else {
-            needsScope = false
+        let accessed = url.startAccessingSecurityScopedResource()
+        guard accessed || FileManager.default.isReadableFile(atPath: url.path) else {
+            throw SourceError.missingBookmark
         }
+        self.needsScope = accessed
     }
 
     deinit { if needsScope { root.stopAccessingSecurityScopedResource() } }
@@ -120,6 +122,40 @@ final class LocalNetworkTrustDelegate: NSObject, URLSessionDelegate, URLSessionT
             return
         }
         completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+}
+
+// MARK: - HTTP/HTTPS 直链
+
+final class DirectMediaSource: CatalogSource, @unchecked Sendable {
+    let config: MediaSourceConfig
+
+    init(config: MediaSourceConfig) { self.config = config }
+
+    private var url: URL? {
+        guard let url = URL(string: config.directURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.host != nil else { return nil }
+        return url
+    }
+
+    func fetchCatalog() async throws -> [MediaItem] {
+        guard let url else { throw SourceError.invalidURL }
+        let fileName = url.lastPathComponent.isEmpty ? config.name : url.lastPathComponent
+        return [MediaItem(id: "\(config.id.uuidString)#\(url.absoluteString)",
+                          sourceID: config.id, path: url.absoluteString,
+                          fileName: fileName, title: config.name,
+                          seriesTitle: nil, season: nil, episode: nil,
+                          year: nil, size: nil)]
+    }
+
+    func list(path: String) async throws -> [RemoteEntry] { [] }
+    func playURL(for path: String) async throws -> URL {
+        guard let url else { throw SourceError.invalidURL }
+        return url
+    }
+    func data(for path: String) async throws -> Data {
+        throw SourceError.notImplemented("直链附属文件")
     }
 }
 
@@ -395,7 +431,7 @@ enum MediaSourceFactory {
         case .local:  return try LocalMediaSource(config: config)
         case .webdav: return try WebDAVMediaSource(config: config)
         case .smb:    return SMBMediaSource(config: config)
-        case .http:   return try WebDAVMediaSource(config: config)  // 直链场景只用 playURL
+        case .http:   return DirectMediaSource(config: config)
         case .emby, .jellyfin: return try MediaServerSource(config: config)
         }
     }

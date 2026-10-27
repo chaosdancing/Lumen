@@ -72,14 +72,8 @@ final class Preferences: ObservableObject {
 
     var resolvedScreenshotFolder: URL {
         if !screenshotFolder.isEmpty { return URL(fileURLWithPath: screenshotFolder) }
-        #if os(macOS)
-        if let pictures = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first {
-            return pictures
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-        #else
-        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        #endif
+        let folder = StorePaths.root.appendingPathComponent("Screenshots", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
     }
 }

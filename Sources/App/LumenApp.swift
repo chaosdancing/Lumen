@@ -11,6 +11,7 @@ final class PlayerPresenter: ObservableObject {
 
 @main
 struct LumenApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var store = AppStore()
     @StateObject private var artwork = ArtworkStore()
     /// 外观偏好要在 App 层观察，否则「设置 → 外观」改完不会立刻生效
@@ -76,6 +77,9 @@ struct LumenApp: App {
         RootView()
             .environmentObject(store)
             .environmentObject(artwork)
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background { store.flushProgressSync() }
+            }
             #if os(macOS)
             .frame(minWidth: 960, minHeight: 620)
             #endif
@@ -98,6 +102,12 @@ enum BrowseDestination: Hashable {
     case recentlyAdded
     case movies
     case series
+    case search
+    case genres
+    case years
+    case ratings
+    case certifications
+    case allMedia
     case unwatched
     case watched
     case favorites
@@ -111,6 +121,12 @@ enum BrowseDestination: Hashable {
         case .recentlyAdded:    return "最近添加"
         case .movies:           return "电影"
         case .series:           return "电视剧"
+        case .search:           return "搜索"
+        case .genres:           return "类型"
+        case .years:            return "年代"
+        case .ratings:          return "评分"
+        case .certifications:   return "分级"
+        case .allMedia:         return "全部影视"
         case .unwatched:        return "未观看"
         case .watched:          return "已观看"
         case .favorites:        return "收藏夹"
@@ -126,6 +142,12 @@ enum BrowseDestination: Hashable {
         case .recentlyAdded:    return "clock"
         case .movies:           return "film"
         case .series:           return "tv"
+        case .search:           return "magnifyingglass"
+        case .genres:           return "tag"
+        case .years:            return "calendar"
+        case .ratings:          return "star"
+        case .certifications:   return "checkmark.shield"
+        case .allMedia:         return "square.grid.2x2"
         case .unwatched:        return "circle"
         case .watched:          return "checkmark.circle"
         case .favorites:        return "star"
@@ -235,7 +257,7 @@ private struct SidebarGroupHeader: View {
 
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var selection: BrowseDestination = .recentlyAdded
+    @State private var selection: BrowseDestination = .home
     @State private var libraryExpanded = true
     @State private var sourcesExpanded = true
     @StateObject private var player = PlayerPresenter()
@@ -380,7 +402,9 @@ struct RootView: View {
                                        onTapTitle: { select(.home) })
                     if libraryExpanded {
                         ForEach([BrowseDestination.continueWatching, .recentlyAdded,
-                                 .movies, .series, .unwatched, .watched, .favorites],
+                                 .movies, .series, .genres, .years,
+                                 .ratings, .certifications,
+                                 .unwatched, .watched, .favorites],
                                 id: \.self) { dest in
                             sidebarRow(symbol: dest.symbol, title: dest.title,
                                        selected: selection == dest) {
@@ -577,6 +601,16 @@ struct RootView: View {
             }
         case .sourceGroup(let isServer):
             SourceGroupView(isServer: isServer)
+        case .search:
+            LibrarySearchView()
+        case .years:
+            LibraryCategoryView(kind: .years)
+        case .genres:
+            LibraryCategoryView(kind: .genres)
+        case .ratings:
+            LibraryCategoryView(kind: .ratings)
+        case .certifications:
+            LibraryCategoryView(kind: .certifications)
         default:
             BrowseView(destination: selection) { select($0) }
         }
@@ -632,6 +666,10 @@ struct RootView: View {
         case "continue":  selection = .continueWatching
         case "movies":    selection = .movies
         case "series":    selection = .series
+        case "genres":    selection = .genres
+        case "years":     selection = .years
+        case "ratings":   selection = .ratings
+        case "certifications": selection = .certifications
         case "unwatched": selection = .unwatched
         case "watched":   selection = .watched
         case "favorites": selection = .favorites
@@ -812,7 +850,17 @@ extension View {
     func detailDestinations() -> some View {
         navigationDestination(for: BrowseRoute.self) { route in
             switch route {
-            case .list(let destination): BrowseView(destination: destination)
+            case .list(let destination):
+                switch destination {
+                case .years: LibraryCategoryView(kind: .years)
+                case .genres: LibraryCategoryView(kind: .genres)
+                case .ratings: LibraryCategoryView(kind: .ratings)
+                case .certifications: LibraryCategoryView(kind: .certifications)
+                case .search: LibrarySearchView()
+                default: BrowseView(destination: destination)
+                }
+            case .category(let category):
+                BrowseView(destination: .allMedia, category: category)
             }
         }
         .navigationDestination(for: DetailTarget.self) { target in

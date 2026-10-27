@@ -430,7 +430,9 @@ struct AddSourceSheet: View {
         case .local:  return bookmark != nil && !name.isEmpty
         case .webdav, .smb: return !host.isEmpty && !name.isEmpty
         case .emby, .jellyfin: return !host.isEmpty && !name.isEmpty && !password.isEmpty
-        case .http:   return URL(string: directURL) != nil && !name.isEmpty
+        case .http:
+            guard let url = URL(string: directURL), let scheme = url.scheme?.lowercased() else { return false }
+            return ["http", "https"].contains(scheme) && url.host != nil && !name.isEmpty
         }
     }
 
@@ -471,7 +473,13 @@ struct AddSourceSheet: View {
 
     private func save() {
         let config = makeConfig()
-        if editing != nil { store.updateSource(config) } else { store.addSource(config) }
+        let saved = editing != nil ? store.updateSource(config) : store.addSource(config)
+        guard saved else {
+            testPassed = false
+            testMessage = "无法将密码保存到钥匙串，请检查应用签名后重试。"
+            return
+        }
+        if config.kind == .http { Task { await store.scan(config) } }
         dismiss()
     }
 
@@ -483,7 +491,12 @@ struct AddSourceSheet: View {
         Task {
             do {
                 let source = try MediaSourceFactory.make(config)
-                if let catalog = source as? CatalogSource {
+                if config.kind == .http {
+                    guard let catalog = source as? CatalogSource else { throw SourceError.invalidURL }
+                    _ = try await catalog.fetchCatalog()
+                    testPassed = true
+                    testMessage = "直链地址格式有效。播放时会连接服务器。"
+                } else if let catalog = source as? CatalogSource {
                     let items = try await catalog.fetchCatalog()
                     testPassed = true
                     testMessage = "连接成功，媒体库 \(items.count) 个条目"

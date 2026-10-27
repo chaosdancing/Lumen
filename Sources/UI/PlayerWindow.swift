@@ -13,6 +13,7 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
     /// 由 PlayerView 注入
     var onSingleClick: (() -> Void)?
     var onDoubleClick: (() -> Void)?
+    var onMiniaturize: (() -> Void)?
     private var monitor: Any?
     private var pendingSingle: DispatchWorkItem?
 
@@ -102,6 +103,10 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
         window = nil
         onClose = nil
         handler?()
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        onMiniaturize?()
     }
 
     /// 全屏切换（播放器窗口自己处理，不能用 NSApp.keyWindow 猜）

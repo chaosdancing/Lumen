@@ -37,6 +37,8 @@ final class PlayerCore: ObservableObject {
     private weak var renderHost: (any MPVRenderHost)?
     private var pendingTarget: PlaybackTarget?
     private var pendingStart: Double = 0
+    /// 保持安全作用域/远程源在异步解封装期间存活；c3d6ab7 的 resourceLease。
+    private var accessLease: (any MediaSource)?
     private var ticker: Timer?
     private var resumeSeek: Double = 0
     private var timeObserver: Any?
@@ -45,6 +47,10 @@ final class PlayerCore: ObservableObject {
     private var avSubtitleGroup: AVMediaSelectionGroup?
     /// 上一次读到的轨道数量，变了就重新拉一遍
     private var lastTrackCount = -1
+    private var avLoadTask: Task<Void, Never>?
+    private var colorModeChecked = false
+    private var lastColorSignature: String?
+    private var desiredRate: Float = 1
 
     init() {
         player.actionAtItemEnd = .pause
@@ -84,18 +90,11 @@ final class PlayerCore: ObservableObject {
     // MARK: 载入
 
     func load(_ target: PlaybackTarget, startAt: Double) {
+        stop()
+        errorText = nil
+        accessLease = target.accessLease
         resetTracks()
-        #if os(iOS)
-        // 杜比视界 / HDR 的 4K 片源交给 AVPlayer（系统原生支持 DV 与 HDR 映射），
-        // mpv 0.37 的 render API 走的是 vo_gpu，不支持 DV，会整片偏绿。
-        let name = target.url.lastPathComponent.lowercased()
-        let isHDR = name.contains("2160p") || name.contains("4k")
-            || name.contains("dolby") || name.contains("dv.") || name.contains(".dv")
-            || name.contains("hdr")
-        let wantMPV = !isHDR && Self.needsMPV(target.url)
-        #else
         let wantMPV = Self.needsMPV(target.url)
-        #endif
         if wantMPV {
             backend = .mpv
             pendingTarget = target
@@ -109,7 +108,7 @@ final class PlayerCore: ObservableObject {
     }
 
     private func loadAV(_ target: PlaybackTarget, startAt: Double) {
-        AppLog.info("AV 播放：\(target.url.absoluteString.prefix(70)) headers=\(target.headers.count)")
+        AppLog.info("AV 播放：\(target.url.host ?? "本地文件") 扩展名=\(target.url.pathExtension) headers=\(target.headers.count)")
         var options: [String: Any] = [AVURLAssetPreferPreciseDurationAndTimingKey: true]
         if !target.headers.isEmpty {
             options["AVURLAssetHTTPHeaderFieldsKey"] = target.headers
@@ -121,30 +120,72 @@ final class PlayerCore: ObservableObject {
         player.appliesMediaSelectionCriteriaAutomatically = false
         Task { await loadAVTracks(item) }
 
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.isPlaying = false }
         }
 
-        Task {
+        avLoadTask?.cancel()
+        avLoadTask = Task {
             do {
+                // 容器可读、音轨可播不代表视频轨能由 AVPlayer 解码。
+                // 部分 HEV1/HEVC MP4 会正常读取时长并推进播放时间，但始终没有画面；
+                // 这是 c3d6ab7 中已验证过的检测与回退路径。
+                let videoTracks = try await asset.loadTracks(withMediaType: .video)
+                guard !Task.isCancelled, self.backend == .av,
+                      self.player.currentItem === item else { return }
+                guard !videoTracks.isEmpty else {
+                    self.fallbackToMPV(target, startAt: startAt, item: item,
+                                       reason: "AVPlayer 未发现视频轨")
+                    return
+                }
+                for track in videoTracks {
+                    let playable = try await track.load(.isPlayable)
+                    guard !Task.isCancelled, self.backend == .av,
+                          self.player.currentItem === item else { return }
+                    if !playable {
+                        self.fallbackToMPV(target, startAt: startAt, item: item,
+                                           reason: "视频轨不兼容 AVPlayer")
+                        return
+                    }
+                }
                 let d = try await asset.load(.duration)
+                guard !Task.isCancelled, self.backend == .av,
+                      self.player.currentItem === item else { return }
                 if d.seconds.isFinite { self.duration = d.seconds }
             } catch {
-                AppLog.error("AV 无法读取，回落 mpv：\(error.localizedDescription)")
-                self.backend = .mpv
-                self.pendingTarget = target
-                self.pendingStart = startAt
-                if self.renderHost != nil { self.startMPVIfReady() }
+                guard !Task.isCancelled, self.backend == .av,
+                      self.player.currentItem === item else { return }
+                self.fallbackToMPV(target, startAt: startAt, item: item,
+                                   reason: error.localizedDescription)
+                return
             }
             if startAt > 0 {
                 await player.seek(to: CMTime(seconds: startAt, preferredTimescale: 600),
                                   toleranceBefore: .zero, toleranceAfter: .zero)
             }
-            player.play()
+            player.playImmediately(atRate: desiredRate)
             self.isPlaying = true
         }
+    }
+
+    private func fallbackToMPV(_ target: PlaybackTarget, startAt: Double,
+                               item: AVPlayerItem, reason: String) {
+        guard backend == .av, player.currentItem === item else { return }
+        AppLog.info("AV 回落 mpv：\(reason)")
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            self.endObserver = nil
+        }
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        resetTracks()
+        backend = .mpv
+        pendingTarget = target
+        pendingStart = startAt
+        if renderHost != nil { startMPVIfReady() }
     }
 
     // MARK: 控制
@@ -152,7 +193,7 @@ final class PlayerCore: ObservableObject {
     func play() {
         switch backend {
         case .av:
-            player.play(); isPlaying = true
+            player.playImmediately(atRate: desiredRate); isPlaying = true
         case .mpv:
             mpvSet("pause", "no"); isPlaying = true
         }
@@ -181,6 +222,10 @@ final class PlayerCore: ObservableObject {
     /// 关闭播放器时调用：暂停、卸载、销毁 mpv 实例。
     /// 顺序很重要：先释放 render context，再 terminate mpv，否则会崩。
     func stop() {
+        avLoadTask?.cancel()
+        avLoadTask = nil
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = nil
         switch backend {
         case .av:
             player.pause()
@@ -196,15 +241,23 @@ final class PlayerCore: ObservableObject {
                 mpv_terminate_destroy(ctx)
             }
         }
+        pendingTarget = nil
+        pendingStart = 0
+        resumeSeek = 0
+        accessLease = nil
+        resetTracks()
+        currentTime = 0
+        duration = 0
         isPlaying = false
     }
 
     func setRate(_ rate: Float) {
+        desiredRate = rate
         switch backend {
         case .av:
-            player.rate = rate
+            if isPlaying { player.rate = rate }
         case .mpv:
-            mpvSet("speed", String(format: "%.2f", rate))
+            if mpvHandle != nil { mpvSet("speed", String(format: "%.2f", rate)) }
         }
     }
 
@@ -255,6 +308,8 @@ final class PlayerCore: ObservableObject {
         avAudioGroup = nil
         avSubtitleGroup = nil
         lastTrackCount = -1
+        colorModeChecked = false
+        lastColorSignature = nil
     }
 
     /// AVPlayer：从 asset 里读可选音轨 / 字幕组
@@ -390,12 +445,13 @@ final class PlayerCore: ObservableObject {
         }
 
         let path = target.url.isFileURL ? target.url.path : target.url.absoluteString
-        AppLog.info("mpv loadfile 准备：\(path.prefix(80))")
+        AppLog.info("mpv loadfile 准备：\(target.url.lastPathComponent)")
         let lrc = mpvRun(ctx, "loadfile \"\(path)\"")
         AppLog.info("mpv loadfile rc=\(lrc)")
         // 注意：loadfile 之后立刻 seek 会被忽略（文件还没加载），
         // 改成记下目标位置，等 ticker 拿到 duration 后再 seek。
         resumeSeek = pendingStart
+        mpvSet("speed", String(format: "%.2f", desiredRate))
         mpvSet("pause", "no")
         isPlaying = true
         pendingTarget = nil
@@ -410,6 +466,9 @@ final class PlayerCore: ObservableObject {
         mpvHandle = ctx
         mpvSetOption(ctx, "vo", "libmpv")          // 走 render API，不自建窗口
         mpvSetOption(ctx, "gpu-api", "opengl")
+        // SwiftUI/GL 宿主是 SDR。显式转换 HDR10/HLG 的色域与传递函数。
+        mpvSetOption(ctx, "target-prim", "bt.709")
+        mpvSetOption(ctx, "target-trc", "srgb")
         #if os(iOS)
         // MPVKit iOS 构建里 videotoolbox-gl 是 disabled，直接 hwdec 会导致颜色错乱/蓝屏，
         // 用 -copy 让帧回到系统内存再由 GL 正常上传
@@ -422,6 +481,7 @@ final class PlayerCore: ObservableObject {
         mpvSetOption(ctx, "config", "no")
         mpvSetOption(ctx, "terminal", "no")
         #if DEBUG
+        // 仅调试包记录 libmpv 的解封装/网络错误，便于定位“已创建画面但无视频帧”。
         mpvSetOption(ctx, "log-file", StorePaths.root.appendingPathComponent("mpv.log").path)
         mpvSetOption(ctx, "msg-level", "all=v")
         #endif
@@ -488,8 +548,33 @@ final class PlayerCore: ObservableObject {
                     }
                 }
                 if let paused = self.mpvFlag("pause") { self.isPlaying = !paused }
+                self.configureDolbyVisionIfNeeded()
                 self.refreshMPVTracksIfNeeded()
             }
+        }
+    }
+
+    private func configureDolbyVisionIfNeeded() {
+        guard !colorModeChecked,
+              let matrix = mpvString("video-params/colormatrix") else { return }
+        let primaries = mpvString("video-params/primaries") ?? "-"
+        let gamma = mpvString("video-params/gamma") ?? "-"
+        let signature = "matrix=\(matrix) primaries=\(primaries) gamma=\(gamma)"
+        if signature != lastColorSignature {
+            AppLog.info("视频色彩：\(signature)")
+            lastColorSignature = signature
+        }
+        guard matrix.lowercased().contains("dolbyvision") else { return }
+        colorModeChecked = true
+
+        // libmpv render API 的旧 GPU 路径不处理 DoVi RPU。MPVKit 自带的 FFmpeg
+        // libplacebo 滤镜先应用 RPU 并输出 BT.709 SDR，再由现有 GL 视图显示。
+        let filter = "lavfi=[libplacebo=apply_dolbyvision=1:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p]"
+        let hwRC = mpvSet("hwdec", "no")
+        let filterRC = mpvSet("vf", filter)
+        AppLog.info("Dolby Vision SDR 转换：hwdec rc=\(hwRC) filter rc=\(filterRC)")
+        if filterRC < 0 {
+            errorText = "该 Dolby Vision 视频无法启用色彩转换"
         }
     }
 }

@@ -76,6 +76,7 @@ struct PlayerView: View {
     @State private var controlsVisible = true
     @State private var lastTapTime = Date.distantPast
     @State private var hideTask: Task<Void, Never>?
+    @State private var playbackEndObserver: NSObjectProtocol?
     @State private var isScrubbing = false
     @State private var scrubValue: Double = 0
     @State private var rate: Float = 1.0
@@ -162,7 +163,14 @@ struct PlayerView: View {
                 revealControls()
             }
             PlayerWindowController.shared.onDoubleClick = {
-                PlayerWindowController.shared.toggleFullScreen()
+                if prefs.doubleClickPause {
+                    engine.isPlaying ? engine.pause() : engine.play()
+                } else {
+                    PlayerWindowController.shared.toggleFullScreen()
+                }
+            }
+            PlayerWindowController.shared.onMiniaturize = {
+                if prefs.pauseOnMinimize { engine.pause() }
             }
             #endif
         }
@@ -177,6 +185,12 @@ struct PlayerView: View {
         }
         .onDisappear {
             saveProgress()
+            store.flushProgressSync()
+            if let playbackEndObserver { NotificationCenter.default.removeObserver(playbackEndObserver) }
+            playbackEndObserver = nil
+            #if os(macOS)
+            PlayerWindowController.shared.onMiniaturize = nil
+            #endif
             engine.stop()
             hideTask?.cancel()
         }
@@ -505,6 +519,11 @@ struct PlayerView: View {
 
     private func captureScreenshot() {
         guard let target else { return }
+        let folder = prefs.resolvedScreenshotFolder
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let name = "\(title)-\(stamp).\(prefs.screenshotFormat)"
+        let url = folder.appendingPathComponent(name)
         let asset = AVURLAsset(url: target.url)
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
@@ -514,11 +533,6 @@ struct PlayerView: View {
         Task {
             do {
                 let cg = try await gen.image(at: time).image
-                let folder = prefs.resolvedScreenshotFolder
-                let stamp = ISO8601DateFormatter().string(from: Date())
-                    .replacingOccurrences(of: ":", with: "-")
-                let name = "\(title)-\(stamp).\(prefs.screenshotFormat)"
-                let url = folder.appendingPathComponent(name)
                 #if os(macOS)
                 let rep = NSBitmapImageRep(cgImage: cg)
                 let data = prefs.screenshotFormat == "png"
@@ -562,10 +576,12 @@ struct PlayerView: View {
             target = t
             let resume = prefs.resumePlayback ? (store.record(for: item.id)?.position ?? 0) : 0
             engine.load(t, startAt: resume)
-            if prefs.defaultRate != 1.0 { engine.setRate(Float(prefs.defaultRate)) }
-            if prefs.autoMarkWatched {
-                NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
-                                                       object: nil, queue: .main) { _ in
+            rate = Float(prefs.defaultRate)
+            if rate != 1.0 { engine.setRate(rate) }
+            if prefs.autoMarkWatched, engine.backend == .av,
+               let playerItem = engine.player.currentItem {
+                playbackEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
+                                                       object: playerItem, queue: .main) { _ in
                     Task { @MainActor in
                         if let d = engine.player.currentItem?.duration.seconds, d.isFinite, d > 0 {
                             store.record(itemID: item.id, position: d, duration: d)
@@ -608,6 +624,7 @@ struct PlayerView: View {
 
     private func closePlayer() {
         saveProgress()
+        store.flushProgressSync()
         engine.stop()
         presenter.close()
     }

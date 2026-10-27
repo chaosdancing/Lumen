@@ -20,6 +20,7 @@ struct MediaMetadata: Codable {
     var overview: String?
     var rating: Double?          // 0...10
     var voteCount: Int?
+    var certification: String?   // PG-13 / R / TV-14 …
     var genres: [String] = []
     var cast: [CastMember] = []
     var posterPath: String?      // TMDB 相对路径 或 本地图片路径
@@ -39,6 +40,7 @@ final class MetadataStore: ObservableObject {
     @Published private(set) var items: [String: MediaMetadata] = [:]
     /// 剧集级缓存：同一部剧的多个 episode 只查一次 TMDB
     private var seriesCache: [String: MediaMetadata] = [:]
+    private var backdropTasks: [String: Task<URL?, Never>] = [:]
     @Published private(set) var inFlight: Set<String> = []
     @Published var lastError: String?
 
@@ -58,7 +60,7 @@ final class MetadataStore: ObservableObject {
         guard let meta = items[itemID], let path = meta.posterPath else { return nil }
         if path.hasPrefix("http") { return URL(string: path) }
         if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
-        guard let key = TMDBClient.apiKey else { return nil }
+        guard TMDBClient.apiKey != nil else { return nil }
         return URL(string: "https://image.tmdb.org/t/p/w500\(path)")
     }
 
@@ -67,6 +69,38 @@ final class MetadataStore: ObservableObject {
         if path.hasPrefix("http") { return URL(string: path) }
         guard TMDBClient.apiKey != nil else { return nil }
         return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
+    }
+
+    /// 头图必须有横版素材；没有缓存时单独向 TMDB 核对片名并取剧照。
+    func bestBackdropURL(for item: MediaItem) async -> URL? {
+        if let cached = backdropURL(for: item.id) { return cached }
+        guard TMDBClient.apiKey != nil else { return nil }
+        if let task = backdropTasks[item.id] { return await task.value }
+
+        let task = Task<URL?, Never> {
+            do {
+                let isSeries = item.seriesTitle != nil
+                let query = item.seriesTitle ?? item.title
+                guard let matched = try await TMDBClient.shared.scrape(
+                    itemID: item.id, query: query, year: item.year, isSeries: isSeries
+                ), matched.backdropPath != nil else { return nil }
+                var metadata = items[item.id] ?? matched
+                metadata.tmdbID = matched.tmdbID
+                metadata.backdropPath = matched.backdropPath
+                if metadata.posterPath == nil { metadata.posterPath = matched.posterPath }
+                items[item.id] = metadata
+                if let key = Self.seriesKey(for: item) { seriesCache[key] = matched }
+                saveToDisk(metadata)
+                return backdropURL(for: item.id)
+            } catch {
+                AppLog.error("TMDB 头图查询失败：\(error.logDescription)")
+                return nil
+            }
+        }
+        backdropTasks[item.id] = task
+        let url = await task.value
+        backdropTasks[item.id] = nil
+        return url
     }
 
     // MARK: 刮削
@@ -150,6 +184,59 @@ final class MetadataStore: ObservableObject {
         for item in pending.prefix(limit) {
             await load(for: item, in: store)
             try? await Task.sleep(nanoseconds: 260_000_000)   // 限速，TMDB 40 req/s
+        }
+    }
+
+    /// 为“分级”页补齐既有缓存。剧集共用同一个 TMDB id，只请求一次。
+    func fillMissingCertifications(items list: [MediaItem], limit: Int = 40) async {
+        guard TMDBClient.apiKey != nil else { return }
+        var fetched: [Int: String] = [:]
+        var noResult: Set<Int> = []
+        var requests = 0
+
+        for item in list {
+            if items[item.id]?.certification?.isEmpty == false { continue }
+            if requests >= limit { break }
+
+            if var metadata = items[item.id], let tmdbID = metadata.tmdbID {
+                if let cached = fetched[tmdbID] {
+                    metadata.certification = cached
+                    items[item.id] = metadata
+                    saveToDisk(metadata)
+                    continue
+                }
+                if noResult.contains(tmdbID) { continue }
+                requests += 1
+                do {
+                    if let value = try await TMDBClient.shared.certification(
+                        tmdbID: tmdbID, isSeries: item.seriesTitle != nil
+                    ) {
+                        fetched[tmdbID] = value
+                        metadata.certification = value
+                        items[item.id] = metadata
+                        saveToDisk(metadata)
+                    } else {
+                        noResult.insert(tmdbID)
+                    }
+                } catch {
+                    AppLog.error("TMDB 分级查询失败：\(error.logDescription)")
+                }
+            } else {
+                requests += 1
+                do {
+                    let query = item.seriesTitle ?? item.title
+                    if let scraped = try await TMDBClient.shared.scrape(
+                        itemID: item.id, query: query, year: item.year,
+                        isSeries: item.seriesTitle != nil
+                    ) {
+                        items[item.id] = scraped
+                        saveToDisk(scraped)
+                    }
+                } catch {
+                    AppLog.error("TMDB 分级补全失败：\(error.logDescription)")
+                }
+            }
+            try? await Task.sleep(nanoseconds: 120_000_000)
         }
     }
 
@@ -242,6 +329,7 @@ enum NFOParser {
         meta.overview = tag("plot") ?? tag("outline")
         meta.releaseDate = tag("year") ?? tag("premiered")
         if let r = tag("rating"), let v = Double(r) { meta.rating = v }
+        meta.certification = tag("mpaa") ?? tag("certification") ?? tag("contentrating")
         meta.genres = matches(text, tag: "genre")
 
         // <actor><name>..</name><role>..</role></actor>
@@ -313,22 +401,27 @@ final class TMDBClient {
     private static let languageKey = "tmdb.language"
 
     static var apiKey: String? {
-        #if DEBUG
-        let v = UserDefaults.standard.string(forKey: keyAccount)
-        #else
         let v = Keychain.get(account: keyAccount)
+        if let v, !v.isEmpty { return v }
+        #if DEBUG
+        if let legacy = UserDefaults.standard.string(forKey: keyAccount), !legacy.isEmpty {
+            if Keychain.set(legacy, account: keyAccount) {
+                UserDefaults.standard.removeObject(forKey: keyAccount)
+            }
+            return legacy
+        }
         #endif
-        guard let v, !v.isEmpty else { return nil }
-        return v
+        return nil
     }
 
-    static func setAPIKey(_ key: String) {
-        #if DEBUG
-        UserDefaults.standard.set(key.isEmpty ? nil : key, forKey: keyAccount)
-        #else
+    @discardableResult
+    static func setAPIKey(_ key: String) -> Bool {
         if key.isEmpty { Keychain.delete(account: keyAccount) }
-        else { Keychain.set(key, account: keyAccount) }
+        else if !Keychain.set(key, account: keyAccount) { return false }
+        #if DEBUG
+        UserDefaults.standard.removeObject(forKey: keyAccount)
         #endif
+        return true
     }
 
     /// TMDB 有两种凭据：
@@ -406,7 +499,7 @@ final class TMDBClient {
         if !usesBearer { detailItems.append(.init(name: "api_key", value: key)) }
         detailItems.append(contentsOf: [
             .init(name: "language", value: Self.language),
-            .init(name: "append_to_response", value: "credits")
+            .init(name: "append_to_response", value: isSeries ? "credits,content_ratings" : "credits,release_dates")
         ])
         detailComps.queryItems = detailItems
         let detailData = try await get(detailComps.url!, bearer: usesBearer ? key : nil)
@@ -422,6 +515,7 @@ final class TMDBClient {
         meta.overview = d["overview"] as? String
         meta.rating = (d["vote_average"] as? Double).map { ($0 * 10).rounded() / 10 }
         meta.voteCount = d["vote_count"] as? Int
+        meta.certification = Self.extractCertification(from: d, isSeries: isSeries)
         meta.posterPath = d["poster_path"] as? String
         meta.backdropPath = d["backdrop_path"] as? String
         meta.releaseDate = d["release_date"] as? String ?? d["first_air_date"] as? String
@@ -441,6 +535,54 @@ final class TMDBClient {
             }
         }
         return meta
+    }
+
+    func certification(tmdbID: Int, isSeries: Bool) async throws -> String? {
+        guard let key = Self.apiKey else { throw TMDBError.noKey }
+        let usesBearer = Self.isReadAccessToken(key)
+        let suffix = isSeries ? "content_ratings" : "release_dates"
+        var comps = URLComponents(string: "https://api.themoviedb.org/3/\(isSeries ? "tv" : "movie")/\(tmdbID)/\(suffix)")!
+        var query: [URLQueryItem] = []
+        if !usesBearer { query.append(.init(name: "api_key", value: key)) }
+        comps.queryItems = query
+        let data = try await get(comps.url!, bearer: usesBearer ? key : nil)
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw TMDBError.decode
+        }
+        let wrapped: [String: Any] = isSeries
+            ? ["content_ratings": root]
+            : ["release_dates": root]
+        return Self.extractCertification(from: wrapped, isSeries: isSeries)
+    }
+
+    private static func extractCertification(from detail: [String: Any], isSeries: Bool) -> String? {
+        let preferredRegions = [Locale.current.region?.identifier, "CN", "US"]
+            .compactMap { $0 }
+        if isSeries,
+           let root = detail["content_ratings"] as? [String: Any],
+           let results = root["results"] as? [[String: Any]] {
+            for region in preferredRegions {
+                if let value = results.first(where: { ($0["iso_3166_1"] as? String) == region })?["rating"] as? String,
+                   !value.isEmpty { return value }
+            }
+            return results.compactMap { $0["rating"] as? String }.first { !$0.isEmpty }
+        }
+        if !isSeries,
+           let root = detail["release_dates"] as? [String: Any],
+           let results = root["results"] as? [[String: Any]] {
+            func value(in group: [String: Any]) -> String? {
+                guard let dates = group["release_dates"] as? [[String: Any]] else { return nil }
+                let preferred = dates.first { ($0["type"] as? Int) == 3 && (($0["certification"] as? String)?.isEmpty == false) }
+                    ?? dates.first { ($0["certification"] as? String)?.isEmpty == false }
+                return preferred?["certification"] as? String
+            }
+            for region in preferredRegions {
+                if let group = results.first(where: { ($0["iso_3166_1"] as? String) == region }),
+                   let rating = value(in: group) { return rating }
+            }
+            return results.compactMap(value).first
+        }
+        return nil
     }
 
     private func get(_ url: URL, bearer: String? = nil) async throws -> Data {

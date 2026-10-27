@@ -6,18 +6,22 @@ import Security
 enum Keychain {
     private static let service = "com.example.lumen.credentials"
 
-    static func set(_ value: String, account: String) {
+    @discardableResult
+    static func set(_ value: String, account: String) -> Bool {
         let data = Data(value.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
+        let update: [String: Any] = [kSecValueData as String: data]
+        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
         var attrs = query
         attrs[kSecValueData as String] = data
         attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(attrs as CFDictionary, nil)
+        return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
     }
 
     static func get(account: String) -> String? {
@@ -45,8 +49,7 @@ enum Keychain {
 }
 
 // MARK: - 凭据
-/// 正式环境只用钥匙串。DEBUG 构建额外写一份本地缓存 ——
-/// ad-hoc 签名的应用每次重新编译都会丢失钥匙串授权，开发期不这么做每改一次代码就得重输密码。
+/// 旧版 DEBUG 明文凭据在首次读取后迁移到钥匙串。
 enum Credentials {
     private static var devFileURL: URL { StorePaths.root.appendingPathComponent("credentials.dev.json") }
 
@@ -56,36 +59,39 @@ enum Credentials {
         return map
     }
 
-    static func set(_ value: String, for id: UUID) {
-        #if !DEBUG
+    static func set(_ value: String, for id: UUID) -> Bool {
         Keychain.set(value, account: id.uuidString)
-        #endif
-        #if DEBUG
-        var map = devMap()
-        map[id.uuidString] = value
-        if let data = try? JSONEncoder().encode(map) {
-            try? data.write(to: devFileURL, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: devFileURL.path)
-        }
-        #endif
     }
 
     static func get(_ id: UUID) -> String? {
+        let v = Keychain.get(account: id.uuidString)
+        if v?.isEmpty == false { return v }
         #if DEBUG
-        // 开发期只读本地文件：ad-hoc 签名每次重编都会变，读钥匙串会弹授权框并阻塞主线程
         return devMap()[id.uuidString]
         #else
-        let v = Keychain.get(account: id.uuidString)
-        return (v?.isEmpty == false) ? v : nil
+        return nil
+        #endif
+    }
+
+    static func migrateLegacy() {
+        #if DEBUG
+        let map = devMap()
+        guard !map.isEmpty else { return }
+        let migrated = map.allSatisfy { Keychain.set($0.value, account: $0.key) }
+        if migrated { try? FileManager.default.removeItem(at: devFileURL) }
         #endif
     }
 
     static func delete(_ id: UUID) {
-        Credentials.delete(id)
+        Keychain.delete(account: id.uuidString)
         #if DEBUG
         var map = devMap()
-        map.removeValue(forKey: id.uuidString)
-        if let data = try? JSONEncoder().encode(map) { try? data.write(to: devFileURL, options: .atomic) }
+        if map.removeValue(forKey: id.uuidString) != nil {
+            if map.isEmpty { try? FileManager.default.removeItem(at: devFileURL) }
+            else if let data = try? JSONEncoder().encode(map) {
+                try? data.write(to: devFileURL, options: .atomic)
+            }
+        }
         #endif
     }
 }
@@ -113,6 +119,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var library: [MediaItem] = []
     @Published private(set) var progress: [String: PlaybackRecord] = [:]
     @Published private(set) var favorites: Set<String> = []
+    @Published private(set) var iCloudProgressAvailable = false
+    private var progressSync: ProgressCloudSync?
 
     @Published var scanState: [UUID: ScanState] = [:]
 
@@ -124,6 +132,14 @@ final class AppStore: ObservableObject {
 
     init() {
         load()
+        let sync = ProgressCloudSync()
+        progressSync = sync
+        sync.start(library: library, progress: progress) { [weak self] records in
+            self?.applySyncedProgress(records)
+        }
+        iCloudProgressAvailable = sync.isAvailable
+        // 旧版详细 mpv 日志可能包含 WebDAV Authorization 请求头。
+        try? FileManager.default.removeItem(at: StorePaths.root.appendingPathComponent("mpv.log"))
         // 诊断探针不依赖窗口出现，放在这里保证一定执行
         Task { @MainActor in await DebugProbes.run(store: self) }
     }
@@ -140,6 +156,7 @@ final class AppStore: ObservableObject {
                 copy.password = Credentials.get(cfg.id) ?? ""
                 return copy
             }
+            Credentials.migrateLegacy()
         }
         if let data = try? Data(contentsOf: StorePaths.library),
            let list = try? decoder.decode([MediaItem].self, from: data) {
@@ -160,8 +177,6 @@ final class AppStore: ObservableObject {
         encoder.dateEncodingStrategy = .iso8601
         var sanitized = sources
         for i in sanitized.indices {
-            let pwd = sanitized[i].password
-            if !pwd.isEmpty { Credentials.set(pwd, for: sanitized[i].id) }
             sanitized[i].password = ""
         }
         try? encoder.encode(sanitized).write(to: StorePaths.sources, options: .atomic)
@@ -170,22 +185,38 @@ final class AppStore: ObservableObject {
         try? encoder.encode(Array(favorites)).write(to: StorePaths.favorites, options: .atomic)
     }
 
-    // MARK: 源管理
-
-    func addSource(_ config: MediaSourceConfig) {
-        sources.append(config)
-        persist()
+    private func persistProgress() {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try? encoder.encode(progress).write(to: StorePaths.progress, options: .atomic)
     }
 
-    func updateSource(_ config: MediaSourceConfig) {
-        guard let idx = sources.firstIndex(where: { $0.id == config.id }) else { return }
+    // MARK: 源管理
+
+    @discardableResult
+    func addSource(_ config: MediaSourceConfig) -> Bool {
+        if !config.password.isEmpty && !Credentials.set(config.password, for: config.id) { return false }
+        sources.append(config)
+        persist()
+        return true
+    }
+
+    @discardableResult
+    func updateSource(_ config: MediaSourceConfig) -> Bool {
+        guard let idx = sources.firstIndex(where: { $0.id == config.id }) else { return false }
+        if !config.password.isEmpty && !Credentials.set(config.password, for: config.id) { return false }
+        if config.password.isEmpty { Credentials.delete(config.id) }
         sources[idx] = config
         persist()
+        return true
     }
 
     func removeSource(_ id: UUID) {
         sources.removeAll { $0.id == id }
+        let removedIDs = Set(library.filter { $0.sourceID == id }.map(\.id))
         library.removeAll { $0.sourceID == id }
+        progress = progress.filter { !removedIDs.contains($0.key) }
+        favorites.subtract(removedIDs)
         Credentials.delete(id)
         persist()
     }
@@ -196,6 +227,7 @@ final class AppStore: ObservableObject {
 
     /// 只清索引与进度，不动磁盘文件
     func removeAllLibrary() {
+        progressSync?.clearAll()
         library.removeAll()
         progress.removeAll()
         scanState.removeAll()
@@ -205,6 +237,7 @@ final class AppStore: ObservableObject {
     // MARK: 扫描
 
     func scan(_ config: MediaSourceConfig) async {
+        guard scanState[config.id]?.isScanning != true else { return }
         scanState[config.id] = ScanState(isScanning: true, found: 0, message: nil)
         let norm = config.normalized()
         AppLog.info("开始扫描 \" \(norm.name)\" kind=\(norm.kind.rawValue) host=\(norm.host) port=\(norm.port) path=\(norm.basePath) https=\(norm.usesHTTPS) user=\(norm.username) pwdLen=\(norm.password.count)")
@@ -219,6 +252,7 @@ final class AppStore: ObservableObject {
                     self.scanState[config.id]?.found = n
                 }
             }
+            guard sources.contains(where: { $0.id == config.id }) else { return }
             // 合并：保留已有条目的 addedAt，避免"最近添加"乱跳
             let existing = Dictionary(uniqueKeysWithValues: library.filter { $0.sourceID == config.id }.map { ($0.path, $0) })
             let merged = collected.map { item -> MediaItem in
@@ -229,6 +263,7 @@ final class AppStore: ObservableObject {
             library.removeAll { $0.sourceID == config.id }
             library.append(contentsOf: merged)
             library.sort { $0.addedAt > $1.addedAt }
+            if let records = progressSync?.currentRecords() { applySyncedProgress(records) }
             scanState[config.id] = ScanState(isScanning: false, found: merged.count, message: nil)
             LocalArtworkResolver.shared.invalidate()   // 重新扫描后清封面路径缓存
             // 有 TMDB key 时，先刮「每部剧的第一集 + 电影」，保证剧名/海报齐全（也用于剧集归并）
@@ -270,10 +305,14 @@ final class AppStore: ObservableObject {
     // MARK: 播放进度
 
     func record(itemID: String, position: Double, duration: Double) {
-        guard duration > 0 else { return }
-        progress[itemID] = PlaybackRecord(itemID: itemID, position: position,
-                                          duration: duration, updatedAt: Date())
-        persist()
+        guard duration.isFinite, position.isFinite, duration > 0, position >= 0 else { return }
+        let record = PlaybackRecord(itemID: itemID, position: position,
+                                    duration: duration, updatedAt: Date())
+        progress[itemID] = record
+        persistProgress()
+        if let item = library.first(where: { $0.id == itemID }) {
+            progressSync?.record(record, for: item)
+        }
     }
 
     func record(for itemID: String) -> PlaybackRecord? { progress[itemID] }
@@ -287,7 +326,34 @@ final class AppStore: ObservableObject {
 
     func clearProgress(itemID: String) {
         progress[itemID] = nil
-        persist()
+        persistProgress()
+        if let item = library.first(where: { $0.id == itemID }) {
+            progressSync?.clear(item)
+        }
+    }
+
+    func flushProgressSync() {
+        progressSync?.flush(force: true)
+        iCloudProgressAvailable = progressSync?.isAvailable ?? false
+    }
+
+    private func applySyncedProgress(_ records: [String: CloudProgress]) {
+        var changed = false
+        for item in library {
+            guard let incoming = records[ProgressIdentity.key(for: item)] else { continue }
+            let localDate = progress[item.id]?.updatedAt ?? .distantPast
+            guard incoming.updatedAt > localDate else { continue }
+            if incoming.deleted {
+                if progress.removeValue(forKey: item.id) != nil { changed = true }
+            } else if incoming.duration > 0, incoming.position.isFinite,
+                      incoming.duration.isFinite {
+                progress[item.id] = PlaybackRecord(itemID: item.id, position: incoming.position,
+                                                    duration: incoming.duration,
+                                                    updatedAt: incoming.updatedAt)
+                changed = true
+            }
+        }
+        if changed { persistProgress() }
     }
 
     // MARK: 派生视图
@@ -305,11 +371,10 @@ final class AppStore: ObservableObject {
     var continueWatching: [MediaItem] {
         library
             .compactMap { item -> (MediaItem, PlaybackRecord)? in
-                guard let r = progress[item.id], !r.isFinished, r.progress > 0.02 else { return nil }
+                guard let r = progress[item.id], r.isInProgress else { return nil }
                 return (item, r)
             }
             .sorted { $0.1.updatedAt > $1.1.updatedAt }
-            .prefix(12)
             .map(\.0)
     }
 
@@ -319,12 +384,9 @@ final class AppStore: ObservableObject {
 
     func playbackTarget(for item: MediaItem) async throws -> PlaybackTarget {
         guard let config = source(for: item.sourceID) else { throw SourceError.invalidURL }
-        if config.kind == .http, let url = URL(string: config.directURL) {
-            return PlaybackTarget(url: url, headers: [:])
-        }
         let source = try MediaSourceFactory.make(config)
         let url = try await source.playURL(for: item.path)
-        return PlaybackTarget(url: url, headers: source.playbackHeaders())
+        return PlaybackTarget(url: url, headers: source.playbackHeaders(), accessLease: source)
     }
 
     /// 从某个源里读文件字节（封面/字幕共用）

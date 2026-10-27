@@ -14,6 +14,7 @@
 		1AD28EC784AF9DFB4A33DBEC /* AudioOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 049001F2B5F2249FA838E128 /* AudioOutput.swift */; };
 		1C23F1BE96FA6084AF459940 /* ArtworkMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5E4163A83372BF82707D2A7 /* ArtworkMatcher.swift */; };
 		1D84A50370DD452E7248AFBE /* LocalArtwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75C1DC9FF926838A67C7BA1D /* LocalArtwork.swift */; };
+		2116FAB1039FFF667B827F51 /* ProgressCloudSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B96C5CFD1DAC88978A4B2B32 /* ProgressCloudSync.swift */; };
 		22BADEBC5BE27D0F087A8D76 /* CoreVideo.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6E79610911BF2CE39F8D6C22 /* CoreVideo.framework */; };
 		25098E6479D1A4AFF85276B2 /* MPVAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C94121A2BE31A5BC56B91 /* MPVAPI.swift */; };
 		25E9C6C9E5F25E64310DF9F5 /* ArtworkMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5E4163A83372BF82707D2A7 /* ArtworkMatcher.swift */; };
@@ -23,9 +24,11 @@
 		3669907985DB6E7EC228FB3C /* Scanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F5FC656CEEA5F2F30C9CA8E /* Scanner.swift */; };
 		36EEBA2F47EF37C183C1BBC0 /* Subtitles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4427DBD398473364AC1F90F0 /* Subtitles.swift */; };
 		38EFCD646945D5D3ED8DE885 /* AudioOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 049001F2B5F2249FA838E128 /* AudioOutput.swift */; };
+		38F87BBF34EC19849608B8C9 /* LibraryCategoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6776EB18E4C6120D0683253A /* LibraryCategoryView.swift */; };
 		396D3E59310B018766DF07DF /* Artwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97600D932A9111372E1BDDC9 /* Artwork.swift */; };
 		3FB595CC5E3A6BEFF78B5FAB /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = DFA919ABA2AF1D80D8875C85 /* MPVKit */; };
 		4020017361E139B1636896CE /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 563CCFE499A8066BB3E68DF4 /* HomeView.swift */; };
+		40BC11E9D9420A309E2A9292 /* LibrarySearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F306F1CB36491AE4B0E73FF8 /* LibrarySearchView.swift */; };
 		42E45E3C42A8AE5D858C5FF4 /* Series.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF5AFD3AFCA3984DA5EC78E2 /* Series.swift */; };
 		4316DC7010EACF2AE2F2C111 /* Sources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FCDC2E7D23875FA2DCCBF90 /* Sources.swift */; };
 		462FAFE14A01EE9591459788 /* Metadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B2C22B517D12A29428952C4 /* Metadata.swift */; };
@@ -42,9 +45,12 @@
 		73DC9B15434EB1265DEEF3D4 /* MediaServerSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6503085D22EAE48BE01E745B /* MediaServerSource.swift */; };
 		75E7F94FAC826F824F89B9EE /* PlayerWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A1CB7B769DF738D0188CC81 /* PlayerWindow.swift */; };
 		76B504321D8142590BB75E01 /* FileBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CDF216D135EBB72C5C957ED /* FileBrowser.swift */; };
+		81B40F7A45716299048A7931 /* LibrarySearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F306F1CB36491AE4B0E73FF8 /* LibrarySearchView.swift */; };
 		834BD324F747F16A421F62BB /* PlayerCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0F4A15CC9843345821B4980 /* PlayerCore.swift */; };
+		86D850EEB9876DE1BB8117F1 /* LibraryCategoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6776EB18E4C6120D0683253A /* LibraryCategoryView.swift */; };
 		87CAFDC15918F8A64FF87FB0 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52337AE0466E48B9A4E86AC9 /* Models.swift */; };
 		898452384EBA2E1C5BDFF361 /* Store.swift in Sources */ = {isa = PBXBuildFile; fileRef = 419BBA542D4272FA6C7DEB6B /* Store.swift */; };
+		8BE8FB686D280AC2D8723C27 /* LibraryQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E20F945C65887ED2D4C6099 /* LibraryQuery.swift */; };
 		90BAFF31331586DB9A80CFDF /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A244A89BFD6235887DD31 /* PlayerView.swift */; };
 		955E318BF4DD477E8E8EDC24 /* Scanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F5FC656CEEA5F2F30C9CA8E /* Scanner.swift */; };
 		958E211C55E44AE0B2DD54B1 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52337AE0466E48B9A4E86AC9 /* Models.swift */; };
@@ -53,7 +59,9 @@
 		9F7B0C3B6AB02C51C86B9653 /* PersonView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A9BD281FD1F0B0218578D7E /* PersonView.swift */; };
 		A0D3949D327FCA79D7E5D1CB /* MPVGLView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FE5F8FAE885C9633C074FCF /* MPVGLView.swift */; };
 		A2508F3C7322D342FA545BB6 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5DB6B3B817FE69B8018535C /* Components.swift */; };
+		A8E9696C7891E8AF7CA2E152 /* ProgressCloudSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B96C5CFD1DAC88978A4B2B32 /* ProgressCloudSync.swift */; };
 		AE1CF8228EB2AFBCBA31E47F /* LumenApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87EF32918A0E39FA3B5E2525 /* LumenApp.swift */; };
+		B0A9950A72062DFBF58E425A /* LibraryQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E20F945C65887ED2D4C6099 /* LibraryQuery.swift */; };
 		B4CDCBA6E13A8A74E3F7458B /* FileBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CDF216D135EBB72C5C957ED /* FileBrowser.swift */; };
 		B4D0CE729F7AFD0D56F229E0 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5DB6B3B817FE69B8018535C /* Components.swift */; };
 		B898FA9811D5A0E022FF9048 /* AppLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5900451A6700FB50F5892EE0 /* AppLog.swift */; };
@@ -78,6 +86,7 @@
 /* Begin PBXFileReference section */
 		0072A63941CB3CA1AB644E98 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		049001F2B5F2249FA838E128 /* AudioOutput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOutput.swift; sourceTree = "<group>"; };
+		0E20F945C65887ED2D4C6099 /* LibraryQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryQuery.swift; sourceTree = "<group>"; };
 		0F5FC656CEEA5F2F30C9CA8E /* Scanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Scanner.swift; sourceTree = "<group>"; };
 		1FCDC2E7D23875FA2DCCBF90 /* Sources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources.swift; sourceTree = "<group>"; };
 		23F8E679AB05EED00289E59E /* MPVGLKView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPVGLKView.swift; sourceTree = "<group>"; };
@@ -92,6 +101,7 @@
 		5900451A6700FB50F5892EE0 /* AppLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLog.swift; sourceTree = "<group>"; };
 		5B91219AC67AA76D693A034E /* DebugProbes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugProbes.swift; sourceTree = "<group>"; };
 		6503085D22EAE48BE01E745B /* MediaServerSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaServerSource.swift; sourceTree = "<group>"; };
+		6776EB18E4C6120D0683253A /* LibraryCategoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCategoryView.swift; sourceTree = "<group>"; };
 		6A1CB7B769DF738D0188CC81 /* PlayerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerWindow.swift; sourceTree = "<group>"; };
 		6B2C22B517D12A29428952C4 /* Metadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Metadata.swift; sourceTree = "<group>"; };
 		6B90281F90AC618A94AE4FCF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -104,6 +114,7 @@
 		98F9574211FE2F0B7BEF897D /* OpenGLES.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OpenGLES.framework; path = System/Library/Frameworks/OpenGLES.framework; sourceTree = SDKROOT; };
 		A00C94121A2BE31A5BC56B91 /* MPVAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPVAPI.swift; sourceTree = "<group>"; };
 		A17A244A89BFD6235887DD31 /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
+		B96C5CFD1DAC88978A4B2B32 /* ProgressCloudSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressCloudSync.swift; sourceTree = "<group>"; };
 		C25296A92DEC6EFF5E39F913 /* Lumen-iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "Lumen-iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		CF5AFD3AFCA3984DA5EC78E2 /* Series.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Series.swift; sourceTree = "<group>"; };
 		D0F4A15CC9843345821B4980 /* PlayerCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerCore.swift; sourceTree = "<group>"; };
@@ -111,6 +122,7 @@
 		DDDBEF465CF96063F103E1AB /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		E36E7A1F70FEB31A52F0887B /* Lumen-macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Lumen-macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5DB6B3B817FE69B8018535C /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		F306F1CB36491AE4B0E73FF8 /* LibrarySearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySearchView.swift; sourceTree = "<group>"; };
 		FB68CC77C52219F8F4027AFA /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -155,6 +167,8 @@
 				584FEE79B78C26C42DF70044 /* DetailView.swift */,
 				6CDF216D135EBB72C5C957ED /* FileBrowser.swift */,
 				563CCFE499A8066BB3E68DF4 /* HomeView.swift */,
+				6776EB18E4C6120D0683253A /* LibraryCategoryView.swift */,
+				F306F1CB36491AE4B0E73FF8 /* LibrarySearchView.swift */,
 				A00C94121A2BE31A5BC56B91 /* MPVAPI.swift */,
 				23F8E679AB05EED00289E59E /* MPVGLKView.swift */,
 				3FE5F8FAE885C9633C074FCF /* MPVGLView.swift */,
@@ -196,11 +210,13 @@
 				D5E4163A83372BF82707D2A7 /* ArtworkMatcher.swift */,
 				049001F2B5F2249FA838E128 /* AudioOutput.swift */,
 				5B91219AC67AA76D693A034E /* DebugProbes.swift */,
+				0E20F945C65887ED2D4C6099 /* LibraryQuery.swift */,
 				75C1DC9FF926838A67C7BA1D /* LocalArtwork.swift */,
 				6503085D22EAE48BE01E745B /* MediaServerSource.swift */,
 				6B2C22B517D12A29428952C4 /* Metadata.swift */,
 				52337AE0466E48B9A4E86AC9 /* Models.swift */,
 				4CA1B3C7BD12EB4FDCD6ADF8 /* Preferences.swift */,
+				B96C5CFD1DAC88978A4B2B32 /* ProgressCloudSync.swift */,
 				0F5FC656CEEA5F2F30C9CA8E /* Scanner.swift */,
 				CF5AFD3AFCA3984DA5EC78E2 /* Series.swift */,
 				1FCDC2E7D23875FA2DCCBF90 /* Sources.swift */,
@@ -346,6 +362,9 @@
 				4AC2A36F4AF23B8EE986FE8D /* DetailView.swift in Sources */,
 				76B504321D8142590BB75E01 /* FileBrowser.swift in Sources */,
 				4020017361E139B1636896CE /* HomeView.swift in Sources */,
+				86D850EEB9876DE1BB8117F1 /* LibraryCategoryView.swift in Sources */,
+				8BE8FB686D280AC2D8723C27 /* LibraryQuery.swift in Sources */,
+				81B40F7A45716299048A7931 /* LibrarySearchView.swift in Sources */,
 				1D84A50370DD452E7248AFBE /* LocalArtwork.swift in Sources */,
 				BA0B61675AB3E84BC51622C3 /* LumenApp.swift in Sources */,
 				25098E6479D1A4AFF85276B2 /* MPVAPI.swift in Sources */,
@@ -359,6 +378,7 @@
 				CE586FCB00DA83CA4FB1B027 /* PlayerView.swift in Sources */,
 				0846C1FC078BE2F7F4F08FFD /* PlayerWindow.swift in Sources */,
 				9F57267081D2BEF901035D20 /* Preferences.swift in Sources */,
+				A8E9696C7891E8AF7CA2E152 /* ProgressCloudSync.swift in Sources */,
 				3669907985DB6E7EC228FB3C /* Scanner.swift in Sources */,
 				42E45E3C42A8AE5D858C5FF4 /* Series.swift in Sources */,
 				60E5F4475EB1EAA53EAA62E3 /* SettingsView.swift in Sources */,
@@ -382,6 +402,9 @@
 				4C88CF95ED8A4BBC6EA5486D /* DetailView.swift in Sources */,
 				B4CDCBA6E13A8A74E3F7458B /* FileBrowser.swift in Sources */,
 				0ACA0D826996A3425E51122A /* HomeView.swift in Sources */,
+				38F87BBF34EC19849608B8C9 /* LibraryCategoryView.swift in Sources */,
+				B0A9950A72062DFBF58E425A /* LibraryQuery.swift in Sources */,
+				40BC11E9D9420A309E2A9292 /* LibrarySearchView.swift in Sources */,
 				2F2884E00DFFA4218BEF551C /* LocalArtwork.swift in Sources */,
 				AE1CF8228EB2AFBCBA31E47F /* LumenApp.swift in Sources */,
 				E2F1581609C918F06023B738 /* MPVAPI.swift in Sources */,
@@ -395,6 +418,7 @@
 				90BAFF31331586DB9A80CFDF /* PlayerView.swift in Sources */,
 				75E7F94FAC826F824F89B9EE /* PlayerWindow.swift in Sources */,
 				30EC00544244DEA64D06AE82 /* Preferences.swift in Sources */,
+				2116FAB1039FFF667B827F51 /* ProgressCloudSync.swift in Sources */,
 				955E318BF4DD477E8E8EDC24 /* Scanner.swift in Sources */,
 				E75B367231B29FAE04BEF1AC /* Series.swift in Sources */,
 				48185BFCB502A1D596D30138 /* SettingsView.swift in Sources */,
@@ -412,11 +436,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = WZ6AS9TRW2;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.5;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.9;
 			};
@@ -426,7 +450,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Lumen.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "Lumen-macOS-Development.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -446,6 +470,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "";
 				GCC_PREPROCESSOR_DEFINITIONS = "$(inherited) DEBUG=1";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Info-iOS.plist";
@@ -463,11 +488,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = WZ6AS9TRW2;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.5;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.9;
 			};
@@ -495,6 +520,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "Lumen-iOS.entitlements";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Info-iOS.plist";
 				PRODUCT_BUNDLE_IDENTIFIER = com.consynia.lumen;

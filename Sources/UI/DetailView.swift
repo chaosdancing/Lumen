@@ -82,6 +82,9 @@ struct MediaDetailView: View {
         if let genres = meta?.genres, !genres.isEmpty {
             parts.append(genres.prefix(3).joined(separator: " / "))
         }
+        if let certification = meta?.certification, !certification.isEmpty {
+            parts.append(certification)
+        }
         return parts.joined(separator: "  ·  ")
     }
 

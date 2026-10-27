@@ -51,10 +51,11 @@ struct ArtworkView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: item?.id) {
+        .task(id: "\(item?.id ?? "")#\(variant)") {
             guard let item else { return }
-            if let hit = artwork.cached(item.id) { image = hit; return }
-            let loaded = await artwork.image(for: item, in: store)
+            image = nil
+            if let hit = artwork.cached(item.id, variant: variant) { image = hit; return }
+            let loaded = await artwork.image(for: item, variant: variant, in: store)
             withAnimation(.easeOut(duration: 0.18)) { image = loaded }
         }
     }

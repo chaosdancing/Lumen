@@ -67,6 +67,9 @@ struct MediaSourceConfig: Identifiable, Codable, Hashable {
         guard !raw.isEmpty else { return copy }
 
         if let r = raw.range(of: "://") {
+            let scheme = raw[..<r.lowerBound].lowercased()
+            if scheme == "https" { copy.usesHTTPS = true }
+            if scheme == "http" { copy.usesHTTPS = false }
             raw = String(raw[r.upperBound...])
         }
         if raw.hasSuffix("/") { raw.removeLast() }
@@ -153,6 +156,7 @@ struct PlaybackRecord: Codable, Hashable {
         return min(1, max(0, position / duration))
     }
     var isFinished: Bool { progress > 0.95 }
+    var isInProgress: Bool { position >= 5 && !isFinished }
 }
 
 // MARK: - 远程目录项

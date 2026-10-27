@@ -30,6 +30,7 @@ func mpv_get_property(_ ctx: OpaquePointer, _ name: UnsafePointer<CChar>, _ form
 @_silgen_name("mpv_command_string")
 func mpv_command_string(_ ctx: OpaquePointer, _ args: UnsafePointer<CChar>) -> Int32
 
+
 @_silgen_name("mpv_free")
 func mpv_free(_ data: UnsafeMutableRawPointer?)
 #endif
@@ -139,10 +140,13 @@ func mpvGetString(_ ctx: OpaquePointer, _ name: String) -> String? {
 #endif
 
 extension PlayerCore {
-    func mpvSet(_ name: String, _ value: String) {
+    @discardableResult
+    func mpvSet(_ name: String, _ value: String) -> Int32 {
         #if os(macOS) || os(iOS)
-        guard let ctx = mpvHandle else { return }
-        mpvSetProperty(ctx, name, value)
+        guard let ctx = mpvHandle else { return -1 }
+        return mpvSetProperty(ctx, name, value)
+        #else
+        return -1
         #endif
     }
 

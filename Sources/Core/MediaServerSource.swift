@@ -34,6 +34,10 @@ final class MediaServerSource: CatalogSource, @unchecked Sendable {
 
     private var apiKey: String { config.password }
 
+    func playbackHeaders() -> [String: String] {
+        ["X-Emby-Token": apiKey]
+    }
+
     private func request(_ path: String, query: [URLQueryItem] = []) -> URLRequest {
         var comps = URLComponents(url: base.appendingPathComponent(path),
                                   resolvingAgainstBaseURL: false)!
@@ -63,19 +67,28 @@ final class MediaServerSource: CatalogSource, @unchecked Sendable {
             URLQueryItem(name: "Fields", value: "Path,ProductionYear,ParentIndexNumber,IndexNumber,SeriesName,RunTimeTicks,ImageTags,MediaSources"),
             URLQueryItem(name: "ImageTypeLimit", value: "1"),
             URLQueryItem(name: "EnableImageTypes", value: "Primary"),
-            URLQueryItem(name: "Limit", value: "5000")
+            URLQueryItem(name: "Limit", value: "500")
         ]
-        let (data, response) = try await session.data(for: request("Items", query: query))
-        guard let http = response as? HTTPURLResponse else { throw SourceError.badResponse(0) }
-        if http.statusCode == 401 || http.statusCode == 403 { throw SourceError.unauthorized }
-        guard (200..<300).contains(http.statusCode) else { throw SourceError.badResponse(http.statusCode) }
-
-        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let items = root["Items"] as? [[String: Any]] else {
-            throw SourceError.badResponse(http.statusCode)
+        var allItems: [[String: Any]] = []
+        while true {
+            let pageQuery = query + [URLQueryItem(name: "StartIndex", value: String(allItems.count))]
+            let (data, response) = try await session.data(for: request("Items", query: pageQuery))
+            guard let http = response as? HTTPURLResponse else { throw SourceError.badResponse(0) }
+            if http.statusCode == 401 || http.statusCode == 403 { throw SourceError.unauthorized }
+            guard (200..<300).contains(http.statusCode) else { throw SourceError.badResponse(http.statusCode) }
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let page = root["Items"] as? [[String: Any]] else {
+                throw SourceError.badResponse(http.statusCode)
+            }
+            if let firstID = page.first?["Id"] as? String,
+               firstID == allItems.first?["Id"] as? String { break }
+            allItems.append(contentsOf: page)
+            let total = root["TotalRecordCount"] as? Int
+            if page.isEmpty || total.map({ allItems.count >= $0 }) == true ||
+                (total == nil && page.count < 500) { break }
         }
 
-        return items.compactMap { dict -> MediaItem? in
+        return allItems.compactMap { dict -> MediaItem? in
             guard let id = dict["Id"] as? String else { return nil }
             let name = dict["Name"] as? String ?? "未命名"
             let series = dict["SeriesName"] as? String
@@ -112,10 +125,7 @@ final class MediaServerSource: CatalogSource, @unchecked Sendable {
     func playURL(for path: String) async throws -> URL {
         var comps = URLComponents(url: base.appendingPathComponent("Videos/\(path)/stream"),
                                   resolvingAgainstBaseURL: false)!
-        comps.queryItems = [
-            URLQueryItem(name: "static", value: "true"),
-            URLQueryItem(name: "api_key", value: apiKey)
-        ]
+        comps.queryItems = [URLQueryItem(name: "static", value: "true")]
         guard let url = comps.url else { throw SourceError.invalidURL }
         return url
     }
