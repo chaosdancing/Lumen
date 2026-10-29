@@ -485,7 +485,8 @@ struct BrowseView: View {
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("搜索媒体库")
+        .accessibilityLabel("搜索")
+        .accessibilityHint("搜索媒体库里的片名、原名或演员")
     }
 
     /// 年代 / 类型 / 评分 / 分级 / 最近添加：和 macOS 侧边栏一一对应，一步直达
