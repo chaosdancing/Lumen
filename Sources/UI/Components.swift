@@ -464,10 +464,11 @@ struct HeroCarousel: View {
 
     private var dots: some View {
         HStack(spacing: 5) {
-            ForEach(0..<min(entries.count, 8), id: \.self) { i in
-                Circle()
+            ForEach(0..<max(1, min(entries.count, 8)), id: \.self) { i in
+                Capsule()
                     .fill(i == index % 8 ? Color.white : Color.white.opacity(0.35))
-                    .frame(width: 5, height: 5)
+                    .frame(width: i == index % 8 ? 14 : 5, height: 5)
+                    .animation(.easeInOut(duration: 0.2), value: index)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)

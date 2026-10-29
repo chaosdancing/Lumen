@@ -305,7 +305,7 @@ struct BrowseView: View {
         }
         .measureViewport { viewport = $0 }
         #if os(iOS)
-        .ignoresSafeArea(.container, edges: destination == .home && prefs.showCarousel && entries.count > 1 ? .top : [])
+        .ignoresSafeArea(.container, edges: destination == .home && prefs.showCarousel && !entries.isEmpty ? .top : [])
         .navigationTitle(category?.title ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -363,13 +363,7 @@ struct BrowseView: View {
                 }
             }
             #else
-            if destination == .home {
-                ToolbarItem(placement: .primaryAction) {
-                    NavigationLink(value: BrowseRoute.list(.search)) {
-                        Label("搜索", systemImage: "magnifyingglass")
-                    }
-                }
-            }
+            // iOS 首页的搜索入口已经做成页面里的搜索框（更显眼），工具栏不再重复放一个
             #endif
             if destination != .home && destination != .search {
                 ToolbarItem(placement: .primaryAction) {
@@ -423,7 +417,7 @@ struct BrowseView: View {
         let movies = store.movieItems
         let continueItems = continuingEntries(series: series, movies: movies)
 
-        VStack(alignment: .leading, spacing: 26) {
+        VStack(alignment: .leading, spacing: 0) {
             if store.library.isEmpty {
                 EmptyStateView(symbol: "play.rectangle",
                                title: "还没有内容",
@@ -435,19 +429,91 @@ struct BrowseView: View {
                 HeroCarousel(entries: Array(entries.prefix(8)),
                              height: heroHeight,
                              currentItem: $heroItem)
+            } else if prefs.showCarousel, let first = entries.first {
+                // 只有一条内容时没有轮播，也要有一块顶到屏幕顶端的头图
+                HeroCarousel(entries: [first], height: heroHeight, currentItem: $heroItem)
             }
 
-            if !continueItems.isEmpty {
-                row("继续观看", continueItems.prefix(12).map { $0 }, destination: .continueWatching)
+            searchEntry
+                .padding(.horizontal, 22)
+                .padding(.top, 18)
+
+            quickLinks
+                .padding(.top, 14)
+
+            VStack(alignment: .leading, spacing: 26) {
+                if !continueItems.isEmpty {
+                    row("继续观看", continueItems.prefix(12).map { $0 }, destination: .continueWatching)
+                }
+                if !series.isEmpty {
+                    row("剧集", series.prefix(12).map { BrowseEntry.series($0) }, destination: .series)
+                }
+                if !movies.isEmpty {
+                    row("电影", movies.prefix(12).map { BrowseEntry.movie($0) }, destination: .movies)
+                }
             }
-            if !series.isEmpty {
-                row("剧集", series.prefix(12).map { BrowseEntry.series($0) }, destination: .series)
-            }
-            if !movies.isEmpty {
-                row("电影", movies.prefix(12).map { BrowseEntry.movie($0) }, destination: .movies)
-            }
+            .padding(.top, 24)
         }
         .padding(.bottom, 24)
+    }
+
+    /// 首页搜索入口：点一下进搜索页并自动聚焦输入框（和 macOS 的 ⌘F 同一条路径）
+    private var searchEntry: some View {
+        Button {
+            #if os(iOS)
+            nav.open(BrowseRoute.list(.search))
+            #else
+            onOpenDestination?(.search)
+            #endif
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text("搜索片名、原名、演员")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 44)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("搜索媒体库")
+    }
+
+    /// 年代 / 类型 / 评分 / 分级 / 最近添加：和 macOS 侧边栏一一对应，一步直达
+    private var quickLinks: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 9) {
+                quickLink(.years)
+                quickLink(.genres)
+                quickLink(.ratings)
+                quickLink(.certifications)
+                quickLink(.recentlyAdded)
+            }
+            .padding(.horizontal, 22)
+        }
+    }
+
+    private func quickLink(_ destination: BrowseDestination) -> some View {
+        Button {
+            #if os(iOS)
+            nav.open(BrowseRoute.list(destination))
+            #else
+            onOpenDestination?(destination)
+            #endif
+        } label: {
+            BrowseControlLabel(title: destination.title, symbol: destination.symbol)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(destination.title)
     }
 
     private func row(_ title: String, _ list: [BrowseEntry], destination: BrowseDestination? = nil) -> some View {
