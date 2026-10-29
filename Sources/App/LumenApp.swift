@@ -280,6 +280,10 @@ struct RootView: View {
         #else
         platformContent
             .preferredColorScheme(preferredScheme)
+            .task {
+                // 诊断入口：容器里放 shot.flag 才生效，用于无触摸环境截图核对版式
+                await DebugProbes.captureWindowIfRequested()
+            }
         #endif
     }
 

@@ -2,6 +2,8 @@ import Foundation
 import CryptoKit
 #if os(macOS)
 import AppKit
+#else
+import UIKit
 #endif
 
 /// 只在容器里放了对应 flag 文件时才跑，用于无界面验证内核能力
@@ -71,6 +73,42 @@ enum DebugProbes {
     /// 不依赖系统的屏幕录制权限，用于核对界面版式。
     @MainActor
     static func captureWindowIfRequested() async {
+        #if os(iOS)
+        // iPad 上没有 ScreenCaptureKit，直接拿 key window 画一遍；
+        // 放在这里是为了真机也能无触摸截图核对版式（和 macOS 共用同一个 flag）。
+        let flag = StorePaths.root.appendingPathComponent("shot.flag")
+        guard let raw = try? String(contentsOf: flag, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: flag)
+        let spec = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if spec.contains("dark") {
+            Preferences.shared.appearance = "dark"
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+        } else if spec.contains("light") {
+            Preferences.shared.appearance = "light"
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }),
+              let window = scene.windows.first(where: \.isKeyWindow) ?? scene.windows.first else {
+            AppLog.error("SHOT 找不到窗口")
+            return
+        }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = window.traitCollection.displayScale > 0 ? window.traitCollection.displayScale : 2
+        let renderer = UIGraphicsImageRenderer(bounds: window.bounds, format: format)
+        let image = renderer.image { _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        guard let data = image.pngData() else {
+            AppLog.error("SHOT PNG 编码失败")
+            return
+        }
+        let out = StorePaths.root.appendingPathComponent("shot.png")
+        try? data.write(to: out, options: .atomic)
+        AppLog.info("SHOT 已保存 \(Int(image.size.width))x\(Int(image.size.height))")
+        #endif
         #if os(macOS)
         let flag = StorePaths.root.appendingPathComponent("shot.flag")
         guard let raw = try? String(contentsOf: flag, encoding: .utf8) else { return }

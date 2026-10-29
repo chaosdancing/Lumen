@@ -48,6 +48,8 @@ final class PlayerCore: ObservableObject {
     /// 上一次读到的轨道数量，变了就重新拉一遍
     private var lastTrackCount = -1
     private var avLoadTask: Task<Void, Never>?
+    /// AVPlayer 起播看门狗：遇到它处理不了的源会既不报错也不出画面，超时就换 mpv
+    private var avWatchdog: Task<Void, Never>?
     private var colorModeChecked = false
     private var lastColorSignature: String?
     private var desiredRate: Float = 1
@@ -133,6 +135,20 @@ final class PlayerCore: ObservableObject {
         player.appliesMediaSelectionCriteriaAutomatically = false
         Task { await loadAVTracks(item) }
 
+        // 看门狗：AVPlayer 对某些源会既不报错也不出画面（认证直链、部分封装），
+        // 表现就是永久黑屏。12 秒还没起来就交给 mpv，别让用户干等。
+        avWatchdog?.cancel()
+        avWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.backend == .av, self.player.currentItem === item,
+                      !self.isPlaying, self.currentTime < 0.1 else { return }
+                self.fallbackToMPV(target, startAt: startAt, item: item,
+                                   reason: "AV 12 秒未起播")
+            }
+        }
+
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
@@ -141,8 +157,7 @@ final class PlayerCore: ObservableObject {
         }
 
         avLoadTask?.cancel()
-        avLoadTask = Task {
-            do {
+        avLoadTask = Task {            do {
                 // 容器可读、音轨可播不代表视频轨能由 AVPlayer 解码。
                 // 部分 HEV1/HEVC MP4 会正常读取时长并推进播放时间，但始终没有画面；
                 // 这是 c3d6ab7 中已验证过的检测与回退路径。
@@ -187,6 +202,8 @@ final class PlayerCore: ObservableObject {
             }
             player.playImmediately(atRate: desiredRate)
             self.isPlaying = true
+            self.avWatchdog?.cancel()
+            self.avWatchdog = nil
         }
     }
 
@@ -194,6 +211,8 @@ final class PlayerCore: ObservableObject {
                                item: AVPlayerItem, reason: String) {
         guard backend == .av, player.currentItem === item else { return }
         AppLog.info("AV 回落 mpv：\(reason)")
+        avWatchdog?.cancel()
+        avWatchdog = nil
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
             self.endObserver = nil
@@ -243,6 +262,8 @@ final class PlayerCore: ObservableObject {
     func stop() {
         avLoadTask?.cancel()
         avLoadTask = nil
+        avWatchdog?.cancel()
+        avWatchdog = nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         endObserver = nil
         switch backend {
@@ -268,6 +289,10 @@ final class PlayerCore: ObservableObject {
         currentTime = 0
         duration = 0
         isPlaying = false
+        #if os(iOS)
+        // 关掉播放器就把音频会话交回去，否则别的 App 的音乐一直被压着
+        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        #endif
     }
 
     func setRate(_ rate: Float) {
