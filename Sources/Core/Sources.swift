@@ -11,16 +11,26 @@ protocol MediaSource: AnyObject, Sendable {
     func data(for path: String) async throws -> Data
     /// 播放时需要附带的 HTTP 头（WebDAV 的 Basic 认证等）
     func playbackHeaders() -> [String: String]
+    /// 某些播放器（尤其 iOS 上的 libmpv）不会可靠地转发手工拼出的
+    /// Authorization 头；这里提供协议级凭据，让后端走原生认证通道。
+    func playbackCredentials() -> PlaybackCredentials?
 }
 
 extension MediaSource {
     func playbackHeaders() -> [String: String] { [:] }
+    func playbackCredentials() -> PlaybackCredentials? { nil }
+}
+
+struct PlaybackCredentials {
+    let username: String
+    let password: String
 }
 
 /// 播放目标：URL + 需要的请求头
 struct PlaybackTarget {
     var url: URL
     var headers: [String: String]
+    var credentials: PlaybackCredentials? = nil
     /// 保持本地安全作用域在整个播放期间有效。
     var accessLease: (any MediaSource)? = nil
 }
@@ -101,7 +111,7 @@ final class LocalMediaSource: MediaSource, @unchecked Sendable {
 final class LocalNetworkTrustDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
     static let shared = LocalNetworkTrustDelegate()
 
-    private func isPrivate(_ host: String) -> Bool {
+    fileprivate func isPrivate(_ host: String) -> Bool {
         if host.hasSuffix(".local") || host == "localhost" { return true }
         let parts = host.split(separator: ".").compactMap { Int($0) }
         guard parts.count == 4 else { return false }
@@ -122,6 +132,69 @@ final class LocalNetworkTrustDelegate: NSObject, URLSessionDelegate, URLSessionT
             return
         }
         completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+}
+
+/// URLSession 会在收到 401 后以认证挑战形式请求 Basic 凭据。iOS 对手动
+/// Authorization 头的处理与 macOS 不一致，显式响应挑战才是可靠路径。
+final class WebDAVAuthenticationDelegate: NSObject, URLSessionTaskDelegate {
+    // 只记录目标服务器、端口和状态，避免凭据及查询参数进入日志。
+    private func endpoint(_ url: URL?) -> String {
+        guard let url else { return "unknown" }
+        return "\(url.scheme ?? "?")://\(url.host ?? "?"):\(url.port ?? (url.scheme == "https" ? 443 : 80))"
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didFinishCollecting metrics: URLSessionTaskMetrics) {
+        for transaction in metrics.transactionMetrics {
+            let expected = "Basic " + Data("\(username):\(password)".utf8).base64EncodedString()
+            let actual = transaction.request.value(forHTTPHeaderField: "Authorization")
+            AppLog.info("DAV header present=\(actual != nil) matchesConfigured=\(actual == expected)")
+            let status = (transaction.response as? HTTPURLResponse)?.statusCode ?? 0
+            AppLog.info("DAV transport target=\(endpoint(transaction.request.url)) status=\(status) proxy=\(transaction.isProxyConnection) protocol=\(transaction.networkProtocolName ?? "unknown")")
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        AppLog.info("DAV redirect status=\(response.statusCode) from=\(endpoint(response.url)) to=\(endpoint(request.url))")
+        completionHandler(request)
+    }
+
+    private let username: String
+    private let password: String
+
+    init(username: String, password: String) {
+        self.username = username
+        self.password = password
+    }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        LocalNetworkTrustDelegate.shared.urlSession(session, didReceive: challenge,
+                                                    completionHandler: completionHandler)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let method = challenge.protectionSpace.authenticationMethod
+        guard [NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest].contains(method),
+              !username.isEmpty,
+              challenge.previousFailureCount == 0 else {
+            if method == NSURLAuthenticationMethodServerTrust,
+               let trust = challenge.protectionSpace.serverTrust,
+               LocalNetworkTrustDelegate.shared.isPrivate(challenge.protectionSpace.host) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                completionHandler(.performDefaultHandling, nil)
+            }
+            return
+        }
+        completionHandler(.useCredential,
+                          URLCredential(user: username, password: password, persistence: .forSession))
     }
 }
 
@@ -202,19 +275,14 @@ final class WebDAVMediaSource: MediaSource, @unchecked Sendable {
         cfg.timeoutIntervalForRequest = 30
         cfg.waitsForConnectivity = true
         self.session = URLSession(configuration: cfg,
-                                  delegate: LocalNetworkTrustDelegate.shared,
+                                  delegate: WebDAVAuthenticationDelegate(username: config.username,
+                                                                           password: config.password),
                                   delegateQueue: nil)
     }
 
-    private var authHeader: String? {
+    func playbackCredentials() -> PlaybackCredentials? {
         guard !config.username.isEmpty else { return nil }
-        let token = Data("\(config.username):\(config.password)".utf8).base64EncodedString()
-        return "Basic \(token)"
-    }
-
-    func playbackHeaders() -> [String: String] {
-        guard let authHeader else { return [:] }
-        return ["Authorization": authHeader]
+        return PlaybackCredentials(username: config.username, password: config.password)
     }
 
     private func authorize(_ request: inout URLRequest) {

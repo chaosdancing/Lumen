@@ -51,6 +51,7 @@
 		87CAFDC15918F8A64FF87FB0 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52337AE0466E48B9A4E86AC9 /* Models.swift */; };
 		898452384EBA2E1C5BDFF361 /* Store.swift in Sources */ = {isa = PBXBuildFile; fileRef = 419BBA542D4272FA6C7DEB6B /* Store.swift */; };
 		8BE8FB686D280AC2D8723C27 /* LibraryQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E20F945C65887ED2D4C6099 /* LibraryQuery.swift */; };
+		8D4DD10294E88ED4DA5C9741 /* MediaSourceConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2846EC2DE3BC4631688A127 /* MediaSourceConfigTests.swift */; };
 		90BAFF31331586DB9A80CFDF /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A17A244A89BFD6235887DD31 /* PlayerView.swift */; };
 		955E318BF4DD477E8E8EDC24 /* Scanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F5FC656CEEA5F2F30C9CA8E /* Scanner.swift */; };
 		958E211C55E44AE0B2DD54B1 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52337AE0466E48B9A4E86AC9 /* Models.swift */; };
@@ -79,9 +80,27 @@
 		E2F1581609C918F06023B738 /* MPVAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00C94121A2BE31A5BC56B91 /* MPVAPI.swift */; };
 		E4C55FBBB9707DC0A16C3048 /* DebugProbes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B91219AC67AA76D693A034E /* DebugProbes.swift */; };
 		E75B367231B29FAE04BEF1AC /* Series.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF5AFD3AFCA3984DA5EC78E2 /* Series.swift */; };
+		EEB3CC8B31CE0028BC0F5DEF /* LibraryNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 322F412EEDFE038360FD51BD /* LibraryNavigationTests.swift */; };
 		EF4ECA2616DAF72D892F49C0 /* MPVGLKView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F8E679AB05EED00289E59E /* MPVGLKView.swift */; };
 		F6C7632DD312E7C632B6D420 /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = 474FE4BF60291D2B645B1434 /* MPVKit */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		ABDE091C0210964A951D2C3B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B6B7785E344ACFF4DA083092 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DC5DC10A671C8D19DDA6B80B;
+			remoteInfo = "Lumen-iOS";
+		};
+		BE69F3DD98B80E08244D173E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B6B7785E344ACFF4DA083092 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DC5DC10A671C8D19DDA6B80B;
+			remoteInfo = "Lumen-iOS";
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		0072A63941CB3CA1AB644E98 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
@@ -90,10 +109,12 @@
 		0F5FC656CEEA5F2F30C9CA8E /* Scanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Scanner.swift; sourceTree = "<group>"; };
 		1FCDC2E7D23875FA2DCCBF90 /* Sources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources.swift; sourceTree = "<group>"; };
 		23F8E679AB05EED00289E59E /* MPVGLKView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPVGLKView.swift; sourceTree = "<group>"; };
+		322F412EEDFE038360FD51BD /* LibraryNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryNavigationTests.swift; sourceTree = "<group>"; };
 		394095F8577368F22DE9C2CD /* SourcesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourcesView.swift; sourceTree = "<group>"; };
 		3FE5F8FAE885C9633C074FCF /* MPVGLView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MPVGLView.swift; sourceTree = "<group>"; };
 		419BBA542D4272FA6C7DEB6B /* Store.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Store.swift; sourceTree = "<group>"; };
 		4427DBD398473364AC1F90F0 /* Subtitles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Subtitles.swift; sourceTree = "<group>"; };
+		44EA8E88669281830338E116 /* Lumen-iOS-UITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "Lumen-iOS-UITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		4CA1B3C7BD12EB4FDCD6ADF8 /* Preferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Preferences.swift; sourceTree = "<group>"; };
 		52337AE0466E48B9A4E86AC9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		563CCFE499A8066BB3E68DF4 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
@@ -103,6 +124,7 @@
 		6503085D22EAE48BE01E745B /* MediaServerSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaServerSource.swift; sourceTree = "<group>"; };
 		6776EB18E4C6120D0683253A /* LibraryCategoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCategoryView.swift; sourceTree = "<group>"; };
 		6A1CB7B769DF738D0188CC81 /* PlayerWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerWindow.swift; sourceTree = "<group>"; };
+		6A9BEC0184470F1A3CD80B78 /* Lumen-UnitTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = "Lumen-UnitTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		6B2C22B517D12A29428952C4 /* Metadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Metadata.swift; sourceTree = "<group>"; };
 		6B90281F90AC618A94AE4FCF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		6CDF216D135EBB72C5C957ED /* FileBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowser.swift; sourceTree = "<group>"; };
@@ -122,6 +144,7 @@
 		DDDBEF465CF96063F103E1AB /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		E36E7A1F70FEB31A52F0887B /* Lumen-macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Lumen-macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		E5DB6B3B817FE69B8018535C /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		F2846EC2DE3BC4631688A127 /* MediaSourceConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaSourceConfigTests.swift; sourceTree = "<group>"; };
 		F306F1CB36491AE4B0E73FF8 /* LibrarySearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibrarySearchView.swift; sourceTree = "<group>"; };
 		FB68CC77C52219F8F4027AFA /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -154,6 +177,7 @@
 			isa = PBXGroup;
 			children = (
 				D5E78A38929407A64FB9F35D /* Sources */,
+				C3316CAB852D28887A24F55A /* Tests */,
 				6B90281F90AC618A94AE4FCF /* Assets.xcassets */,
 				5B0ECACBB8DC46ED89CE5935 /* Frameworks */,
 				70C838A3277A6AAF3F2B0484 /* Products */,
@@ -196,10 +220,20 @@
 		70C838A3277A6AAF3F2B0484 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				44EA8E88669281830338E116 /* Lumen-iOS-UITests.xctest */,
 				C25296A92DEC6EFF5E39F913 /* Lumen-iOS.app */,
 				E36E7A1F70FEB31A52F0887B /* Lumen-macOS.app */,
+				6A9BEC0184470F1A3CD80B78 /* Lumen-UnitTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		AF82961DA40DFEBA6098296A /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				322F412EEDFE038360FD51BD /* LibraryNavigationTests.swift */,
+			);
+			path = iOS;
 			sourceTree = "<group>";
 		};
 		BCA65C2ACCB40CB5A6933CF8 /* Core */ = {
@@ -226,6 +260,23 @@
 			path = Core;
 			sourceTree = "<group>";
 		};
+		C3316CAB852D28887A24F55A /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				AF82961DA40DFEBA6098296A /* iOS */,
+				D4F3C5F6204113CDE603785B /* Unit */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		D4F3C5F6204113CDE603785B /* Unit */ = {
+			isa = PBXGroup;
+			children = (
+				F2846EC2DE3BC4631688A127 /* MediaSourceConfigTests.swift */,
+			);
+			path = Unit;
+			sourceTree = "<group>";
+		};
 		D5E78A38929407A64FB9F35D /* Sources */ = {
 			isa = PBXGroup;
 			children = (
@@ -247,6 +298,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		165F286B40E66003AE82E98D /* Lumen-iOS-UITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3F2A656804EE397EAB6FE446 /* Build configuration list for PBXNativeTarget "Lumen-iOS-UITests" */;
+			buildPhases = (
+				619497AE229870821BF679D2 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				6256CF333055CFC1F744A5C8 /* PBXTargetDependency */,
+			);
+			name = "Lumen-iOS-UITests";
+			packageProductDependencies = (
+			);
+			productName = "Lumen-iOS-UITests";
+			productReference = 44EA8E88669281830338E116 /* Lumen-iOS-UITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		2E1D3091275BA8FA3483E41F /* Lumen-macOS */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = E00A401686BBC3E01255F0FA /* Build configuration list for PBXNativeTarget "Lumen-macOS" */;
@@ -266,6 +335,24 @@
 			productName = "Lumen-macOS";
 			productReference = E36E7A1F70FEB31A52F0887B /* Lumen-macOS.app */;
 			productType = "com.apple.product-type.application";
+		};
+		D417318D9CFE2F99B336547D /* Lumen-UnitTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1A1FA803B40720EF1D472BFA /* Build configuration list for PBXNativeTarget "Lumen-UnitTests" */;
+			buildPhases = (
+				00F3CB0B7D8E35A87A0576A0 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0F798E422C36EEF9902B9246 /* PBXTargetDependency */,
+			);
+			name = "Lumen-UnitTests";
+			packageProductDependencies = (
+			);
+			productName = "Lumen-UnitTests";
+			productReference = 6A9BEC0184470F1A3CD80B78 /* Lumen-UnitTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		DC5DC10A671C8D19DDA6B80B /* Lumen-iOS */ = {
 			isa = PBXNativeTarget;
@@ -296,9 +383,19 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					165F286B40E66003AE82E98D = {
+						DevelopmentTeam = WZ6AS9TRW2;
+						ProvisioningStyle = Automatic;
+						TestTargetID = DC5DC10A671C8D19DDA6B80B;
+					};
 					2E1D3091275BA8FA3483E41F = {
 						DevelopmentTeam = WZ6AS9TRW2;
 						ProvisioningStyle = Automatic;
+					};
+					D417318D9CFE2F99B336547D = {
+						DevelopmentTeam = WZ6AS9TRW2;
+						ProvisioningStyle = Automatic;
+						TestTargetID = DC5DC10A671C8D19DDA6B80B;
 					};
 					DC5DC10A671C8D19DDA6B80B = {
 						DevelopmentTeam = WZ6AS9TRW2;
@@ -323,6 +420,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				D417318D9CFE2F99B336547D /* Lumen-UnitTests */,
+				165F286B40E66003AE82E98D /* Lumen-iOS-UITests */,
 				2E1D3091275BA8FA3483E41F /* Lumen-macOS */,
 				DC5DC10A671C8D19DDA6B80B /* Lumen-iOS */,
 			);
@@ -349,6 +448,22 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		00F3CB0B7D8E35A87A0576A0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8D4DD10294E88ED4DA5C9741 /* MediaSourceConfigTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		619497AE229870821BF679D2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EEB3CC8B31CE0028BC0F5DEF /* LibraryNavigationTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C52DFD65AD064A4642AF5D6B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -431,12 +546,25 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		0F798E422C36EEF9902B9246 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = DC5DC10A671C8D19DDA6B80B /* Lumen-iOS */;
+			targetProxy = BE69F3DD98B80E08244D173E /* PBXContainerItemProxy */;
+		};
+		6256CF333055CFC1F744A5C8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = DC5DC10A671C8D19DDA6B80B /* Lumen-iOS */;
+			targetProxy = ABDE091C0210964A951D2C3B /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
 		2D2F99B6443D2E21D64FD94E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_TEAM = WZ6AS9TRW2;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -471,6 +599,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "";
+				ENABLE_TESTABILITY = YES;
 				GCC_PREPROCESSOR_DEFINITIONS = "$(inherited) DEBUG=1";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Info-iOS.plist";
@@ -484,11 +613,26 @@
 			};
 			name = Debug;
 		};
+		4A3F4DBFF07ECAB146CA1F30 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.consynia.lumen.unittests;
+				PRODUCT_NAME = LumenUnitTests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Lumen.app/Lumen";
+				TEST_TARGET_NAME = "Lumen-iOS";
+			};
+			name = Debug;
+		};
 		AA076C7BC7C6C45F1BB03F03 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_TEAM = WZ6AS9TRW2;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
@@ -516,6 +660,19 @@
 			};
 			name = Release;
 		};
+		C1A425D30498F9D08A658D82 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.consynia.lumen.uitests;
+				PRODUCT_NAME = LumenUITests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "Lumen-iOS";
+			};
+			name = Release;
+		};
 		DBA8042E6A3ECFD0D3A2AD49 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -532,9 +689,55 @@
 			};
 			name = Release;
 		};
+		F5A8D9062BAC7BC6EEA05C47 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.consynia.lumen.unittests;
+				PRODUCT_NAME = LumenUnitTests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Lumen.app/Lumen";
+				TEST_TARGET_NAME = "Lumen-iOS";
+			};
+			name = Release;
+		};
+		FA8B92FEDE77B5F4CA894F0D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.consynia.lumen.uitests;
+				PRODUCT_NAME = LumenUITests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "Lumen-iOS";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		1A1FA803B40720EF1D472BFA /* Build configuration list for PBXNativeTarget "Lumen-UnitTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4A3F4DBFF07ECAB146CA1F30 /* Debug */,
+				F5A8D9062BAC7BC6EEA05C47 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		3F2A656804EE397EAB6FE446 /* Build configuration list for PBXNativeTarget "Lumen-iOS-UITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA8B92FEDE77B5F4CA894F0D /* Debug */,
+				C1A425D30498F9D08A658D82 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		6DD292EF6FDCD5B150E55BFF /* Build configuration list for PBXNativeTarget "Lumen-iOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

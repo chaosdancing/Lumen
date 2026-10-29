@@ -344,6 +344,31 @@ struct HeroCarousel: View {
     @State private var timer: Task<Void, Never>?
 
     var body: some View {
+        #if os(iOS)
+        TabView(selection: $index) {
+            ForEach(Array(entries.enumerated()), id: \.element.id) { offset, entry in
+                ZStack(alignment: .bottomLeading) {
+                    backdrop(for: entry)
+                    info(for: entry)
+                        .padding(.horizontal, 32)
+                        .padding(.bottom, max(54, height * 0.14))
+                }
+                .tag(offset)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .accessibilityIdentifier("library.carousel")
+        .overlay { dots }
+        .frame(height: height)
+        .onAppear { syncCurrent(); startAutoAdvance() }
+        .onDisappear { timer?.cancel() }
+        .onChange(of: index) { _, _ in syncCurrent(); startAutoAdvance() }
+        .onChange(of: entries.map(\.id)) { _, _ in
+            index = min(index, max(0, entries.count - 1))
+            syncCurrent()
+            startAutoAdvance()
+        }
+        #else
         ZStack(alignment: .bottomLeading) {
             if entries.indices.contains(index) {
                 let entry = entries[index]
@@ -366,6 +391,7 @@ struct HeroCarousel: View {
         }
         .onDisappear { timer?.cancel() }
         .onChange(of: index) { _, _ in syncCurrent() }
+        #endif
     }
 
     private func syncCurrent() {
@@ -420,6 +446,7 @@ struct HeroCarousel: View {
                 .buttonStyle(.plain)
                 .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
 
+                #if os(macOS)
                 Button { index = (index + 1) % max(1, entries.count) } label: {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 12, weight: .semibold))
@@ -429,6 +456,7 @@ struct HeroCarousel: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                #endif
             }
             .padding(.top, 2)
         }
@@ -446,6 +474,10 @@ struct HeroCarousel: View {
         .padding(.trailing, 40)
         .padding(.bottom, 26)
         .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("轮播图页码")
+        .accessibilityValue("\(index + 1)/\(entries.count)")
+        .accessibilityIdentifier("library.carousel.page")
     }
 
     private func play(_ entry: BrowseEntry) {

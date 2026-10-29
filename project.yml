@@ -12,7 +12,7 @@ settings:
     SWIFT_VERSION: "5.9"
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: WZ6AS9TRW2
-    CURRENT_PROJECT_VERSION: 5
+    CURRENT_PROJECT_VERSION: 13
     MARKETING_VERSION: 0.1.5
     SWIFT_EMIT_LOC_STRINGS: YES
 
@@ -22,6 +22,42 @@ packages:
     exactVersion: 1.1.0-n9.0.2
 
 targets:
+  Lumen-UnitTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/Unit
+    dependencies:
+      - target: Lumen-iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Lumen-iOS
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Lumen.app/Lumen"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        PRODUCT_BUNDLE_IDENTIFIER: com.consynia.lumen.unittests
+        PRODUCT_NAME: LumenUnitTests
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+  Lumen-iOS-UITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Tests/iOS
+    dependencies:
+      - target: Lumen-iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Lumen-iOS
+        PRODUCT_BUNDLE_IDENTIFIER: com.consynia.lumen.uitests
+        PRODUCT_NAME: LumenUITests
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        TARGETED_DEVICE_FAMILY: "1,2"
+
   Lumen-macOS:
     type: application
     platform: macOS
@@ -75,6 +111,10 @@ targets:
   Lumen-iOS:
     type: application
     platform: iOS
+    scheme:
+      testTargets:
+        - Lumen-UnitTests
+        - Lumen-iOS-UITests
     dependencies:
       - package: MPVKit
         product: MPVKit
@@ -121,6 +161,7 @@ targets:
       configs:
         Debug:
           CODE_SIGN_ENTITLEMENTS: ""
+          ENABLE_TESTABILITY: YES
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
           GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) DEBUG=1"
         Release:

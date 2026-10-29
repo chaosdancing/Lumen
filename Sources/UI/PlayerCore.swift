@@ -77,11 +77,14 @@ final class PlayerCore: ObservableObject {
 
     // MARK: 选后端
 
-    static func needsMPV(_ url: URL) -> Bool {
-        let ext = url.pathExtension.lowercased()
+    static func needsMPV(_ target: PlaybackTarget) -> Bool {
+        // AVFoundation 无法把 URLSession 的 Basic-auth challenge 代理给应用；
+        // 受保护的远程文件由 mpv/FFmpeg 的 URL 认证路径处理。
+        if target.credentials != nil { return true }
+        let ext = target.url.pathExtension.lowercased()
         let native: Set<String> = ["mp4", "m4v", "mov", "qt"]
         if native.contains(ext) { return false }
-        if url.absoluteString.contains(".m3u8") { return false }
+        if target.url.absoluteString.contains(".m3u8") { return false }
         return MediaFileType.video.contains(ext)
     }
 
@@ -92,9 +95,19 @@ final class PlayerCore: ObservableObject {
     func load(_ target: PlaybackTarget, startAt: Double) {
         stop()
         errorText = nil
+        #if os(iOS)
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setActive(true)
+        } catch {
+            errorText = "无法启用音频输出：\(error.localizedDescription)"
+            return
+        }
+        #endif
         accessLease = target.accessLease
         resetTracks()
-        let wantMPV = Self.needsMPV(target.url)
+        let wantMPV = Self.needsMPV(target)
         if wantMPV {
             backend = .mpv
             pendingTarget = target
@@ -158,6 +171,12 @@ final class PlayerCore: ObservableObject {
             } catch {
                 guard !Task.isCancelled, self.backend == .av,
                       self.player.currentItem === item else { return }
+                if (error as NSError).domain == NSURLErrorDomain,
+                   [NSURLErrorUserAuthenticationRequired, NSURLErrorUserCancelledAuthentication].contains((error as NSError).code) {
+                    self.errorText = "媒体源认证失败，请在文件源设置中重新保存账号密码并测试连接。"
+                    self.isPlaying = false
+                    return
+                }
                 self.fallbackToMPV(target, startAt: startAt, item: item,
                                    reason: error.localizedDescription)
                 return
@@ -429,7 +448,7 @@ final class PlayerCore: ObservableObject {
 
     private func startMPVIfReady() {
         guard let target = pendingTarget, let host = renderHost else { return }
-        if mpvHandle == nil { createMPV() }
+        if mpvHandle == nil { createMPV(target: target) }
         guard let ctx = mpvHandle else { return }
         if host.renderContextReady == false {
             guard host.createRenderContext(mpv: ctx) else {
@@ -438,13 +457,7 @@ final class PlayerCore: ObservableObject {
             }
         }
 
-        // 请求头（WebDAV 的 Basic 认证等）
-        if !target.headers.isEmpty {
-            let fields = target.headers.map { "\($0.key): \($0.value)" }.joined(separator: ",")
-            mpvSetOption(ctx, "http-header-fields", fields)
-        }
-
-        let path = target.url.isFileURL ? target.url.path : target.url.absoluteString
+        let path = Self.mpvPath(for: target)
         AppLog.info("mpv loadfile 准备：\(target.url.lastPathComponent)")
         let lrc = mpvRun(ctx, "loadfile \"\(path)\"")
         AppLog.info("mpv loadfile rc=\(lrc)")
@@ -458,12 +471,24 @@ final class PlayerCore: ObservableObject {
         startTicker()
     }
 
-    private func createMPV() {
+    private func createMPV(target: PlaybackTarget) {
         guard let ctx = mpv_create() else {
             errorText = "无法创建 mpv 实例"
             return
         }
         mpvHandle = ctx
+        if target.credentials == nil, !target.headers.isEmpty {
+            let fields = target.headers.sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)".replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: ",", with: "\\,") }
+                .joined(separator: ",")
+            let rc = mpvSetOption(ctx, "http-header-fields", fields)
+            guard rc >= 0 else {
+                errorText = "无法配置媒体源认证（\(rc)）"
+                mpv_terminate_destroy(ctx)
+                mpvHandle = nil
+                return
+            }
+        }
         mpvSetOption(ctx, "vo", "libmpv")          // 走 render API，不自建窗口
         mpvSetOption(ctx, "gpu-api", "opengl")
         // SwiftUI/GL 宿主是 SDR。显式转换 HDR10/HLG 的色域与传递函数。
@@ -480,11 +505,6 @@ final class PlayerCore: ObservableObject {
         #endif
         mpvSetOption(ctx, "config", "no")
         mpvSetOption(ctx, "terminal", "no")
-        #if DEBUG
-        // 仅调试包记录 libmpv 的解封装/网络错误，便于定位“已创建画面但无视频帧”。
-        mpvSetOption(ctx, "log-file", StorePaths.root.appendingPathComponent("mpv.log").path)
-        mpvSetOption(ctx, "msg-level", "all=v")
-        #endif
         mpvSetOption(ctx, "keep-open", "no")
         mpvSetOption(ctx, "input-media-keys", "no")
         mpvSetOption(ctx, "input-default-bindings", "no")
@@ -522,9 +542,25 @@ final class PlayerCore: ObservableObject {
         AppLog.info("mpv 初始化 rc=\(rc)（render API 模式）")
         guard rc >= 0 else {
             errorText = "mpv 初始化失败（rc=\(rc)）"
+            mpv_terminate_destroy(ctx)
+            mpvHandle = nil
             return
         }
         AppLog.info("mpv 初始化完成（render API 模式）")
+    }
+
+    /// MPVKit 当前的 iOS 构建没有 `http-user` / `http-password` 选项。
+    /// FFmpeg 会可靠解析 URL userinfo 并发起 Basic 认证，因此仅在交给 MPV
+    /// 的瞬时字符串上附加经过 URLComponents 编码的凭据；不写日志、不回传 UI。
+    private static func mpvPath(for target: PlaybackTarget) -> String {
+        guard !target.url.isFileURL,
+              let credentials = target.credentials,
+              var components = URLComponents(url: target.url, resolvingAgainstBaseURL: false) else {
+            return target.url.isFileURL ? target.url.path : target.url.absoluteString
+        }
+        components.user = credentials.username
+        components.password = credentials.password
+        return components.url?.absoluteString ?? target.url.absoluteString
     }
 
 
@@ -535,6 +571,22 @@ final class PlayerCore: ObservableObject {
             guard let self else { return }
             Task { @MainActor in
                 guard self.backend == .mpv else { return }
+                if let ctx = self.mpvHandle {
+                    while let event = mpv_wait_event(ctx, 0)?.pointee, event.id != 0 {
+                        if event.id == 7, let data = event.data { // MPV_EVENT_END_FILE
+                            let end = data.load(as: MPVEndFileEvent.self)
+                            if end.reason == 4 { // MPV_END_FILE_REASON_ERROR
+                                self.errorText = end.error == -13
+                                    ? "无法读取媒体文件，请检查网络连接，并在文件源设置中测试账号密码。"
+                                    : "播放失败（\(end.error)），请检查文件或尝试其他视频。"
+                                self.isPlaying = false
+                                self.ticker?.invalidate()
+                                AppLog.error("mpv 播放失败 code=\(end.error)")
+                                return
+                            }
+                        }
+                    }
+                }
                 if let t = self.mpvDouble("time-pos") { self.currentTime = t }
                 if let d = self.mpvDouble("duration"), d > 0 {
                     self.duration = d

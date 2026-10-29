@@ -15,6 +15,24 @@ func mpv_create() -> OpaquePointer?
 @_silgen_name("mpv_initialize")
 func mpv_initialize(_ ctx: OpaquePointer) -> Int32
 
+struct MPVEvent {
+    var id: Int32
+    var error: Int32
+    var replyUserdata: UInt64
+    var data: UnsafeMutableRawPointer?
+}
+
+struct MPVEndFileEvent {
+    var reason: Int32
+    var error: Int32
+    var playlistEntryID: Int64
+    var playlistInsertID: Int64
+    var playlistInsertCount: Int32
+}
+
+@_silgen_name("mpv_wait_event")
+func mpv_wait_event(_ ctx: OpaquePointer, _ timeout: Double) -> UnsafePointer<MPVEvent>?
+
 @_silgen_name("mpv_terminate_destroy")
 func mpv_terminate_destroy(_ ctx: OpaquePointer)
 
@@ -70,6 +88,7 @@ enum MPVRenderParamType {
     static let openGLInitParams: Int32 = 2
     static let openGLFBO: Int32 = 3
     static let flipY: Int32 = 4
+    static let blockForTargetTime: Int32 = 12
 }
 
 @_silgen_name("mpv_render_context_create")

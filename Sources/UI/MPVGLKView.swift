@@ -16,6 +16,15 @@ final class MPVGLKView: UIView, MPVRenderHost {
     private var displayLink: CADisplayLink?
     private var needsRender = true
     private var attached = false
+    private var drawableWidth: GLint = 0
+    private var drawableHeight: GLint = 0
+    private var allocatedSize: CGSize = .zero
+
+    private final class DisplayLinkTarget: NSObject {
+        weak var view: MPVGLKView?
+        @objc func tick() { view?.tick() }
+    }
+    private let displayLinkTarget = DisplayLinkTarget()
 
     var renderContextReady: Bool { renderContext != nil }
 
@@ -32,7 +41,6 @@ final class MPVGLKView: UIView, MPVRenderHost {
             kEAGLDrawablePropertyColorFormat: kEAGLColorFormatRGBA8
         ]
         setupContext()
-        startDisplayLink()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -46,12 +54,14 @@ final class MPVGLKView: UIView, MPVRenderHost {
         }
         context = ctx
         EAGLContext.setCurrent(ctx)
-        eaglLayer.contentsScale = UIScreen.main.scale
+        contentScaleFactor = UIScreen.main.scale
         AppLog.info("iOS GL 环境就绪（EAGLContext ES3）")
     }
 
     private func startDisplayLink() {
-        let link = CADisplayLink(target: self, selector: #selector(tick))
+        guard displayLink == nil else { return }
+        displayLinkTarget.view = self
+        let link = CADisplayLink(target: displayLinkTarget, selector: #selector(DisplayLinkTarget.tick))
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
@@ -60,6 +70,7 @@ final class MPVGLKView: UIView, MPVRenderHost {
 
     @objc private func tick() {
         guard let rctx = renderContext else { return }
+        EAGLContext.setCurrent(context)
         // MPV_RENDER_UPDATE_FRAME = 1：有新帧就标脏
         if mpv_render_context_update(rctx) & 1 != 0 { needsRender = true }
         guard needsRender else { return }
@@ -100,13 +111,8 @@ final class MPVGLKView: UIView, MPVRenderHost {
         }
         renderContext = created
 
-        let callback: @convention(c) (UnsafeMutableRawPointer?) -> Void = { ctx in
-            guard let ctx else { return }
-            let view = Unmanaged<MPVGLKView>.fromOpaque(ctx).takeUnretainedValue()
-            DispatchQueue.main.async { view.needsRender = true }
-        }
-        mpv_render_context_set_update_callback(created, callback,
-                                               Unmanaged.passUnretained(self).toOpaque())
+        // CADisplayLink polls update on the GL thread; no unretained cross-thread callback.
+        startDisplayLink()
         AppLog.info("iOS mpv render context 创建成功（opengl es）")
         needsRender = true
         return true
@@ -117,28 +123,35 @@ final class MPVGLKView: UIView, MPVRenderHost {
         EAGLContext.setCurrent(ctx)
         glBindFramebuffer(GLenum(GL_FRAMEBUFFER), framebuffer)
 
-        let scale = contentScaleFactor
-        let w = Int32(bounds.width * scale)
-        let h = Int32(bounds.height * scale)
+        let w = drawableWidth
+        let h = drawableHeight
         guard w > 0, h > 0 else { return }
 
         var fbo = MPVOpenGLFBO(fbo: GLint(framebuffer), w: w, h: h, internalFormat: 0)
         var flip: Int32 = 1
+        var blockForTargetTime: Int32 = 0
         withUnsafeMutablePointer(to: &fbo) { fboPtr in
             withUnsafeMutablePointer(to: &flip) { flipPtr in
+                withUnsafeMutablePointer(to: &blockForTargetTime) { blockPtr in
                 var params = [
                     MPVRenderParam(type: MPVRenderParamType.openGLFBO,
                                    data: UnsafeMutableRawPointer(fboPtr)),
                     MPVRenderParam(type: MPVRenderParamType.flipY,
                                    data: UnsafeMutableRawPointer(flipPtr)),
+                    // CADisplayLink 已负责帧调度，不能让 mpv 在主线程等下一帧时间。
+                    MPVRenderParam(type: MPVRenderParamType.blockForTargetTime,
+                                   data: UnsafeMutableRawPointer(blockPtr)),
                     MPVRenderParam(type: MPVRenderParamType.invalid, data: nil)
                 ]
                 let rc = mpv_render_context_render(renderContext, &params)
                 if rc < 0 { AppLog.error("iOS render rc=\(rc)") }
+                }
             }
         }
         glBindRenderbuffer(GLenum(GL_RENDERBUFFER), colorRenderbuffer)
-        ctx.presentRenderbuffer(Int(GL_RENDERBUFFER))
+        if !ctx.presentRenderbuffer(Int(GL_RENDERBUFFER)) {
+            AppLog.error("iOS presentRenderbuffer 失败")
+        }
 
         renderCount += 1
         if renderCount == 1 || renderCount == 60 {
@@ -149,6 +162,10 @@ final class MPVGLKView: UIView, MPVRenderHost {
     override func layoutSubviews() {
         super.layoutSubviews()
         guard bounds.width > 0, bounds.height > 0, let ctx = context else { return }
+        let pixelSize = CGSize(width: bounds.width * contentScaleFactor,
+                               height: bounds.height * contentScaleFactor)
+        // 进度/控制条更新也会触发布局，尺寸未变时不能重新分配并清空画面。
+        guard pixelSize != allocatedSize || framebuffer == 0 else { return }
         EAGLContext.setCurrent(ctx)
 
         if framebuffer == 0 {
@@ -157,7 +174,9 @@ final class MPVGLKView: UIView, MPVRenderHost {
         }
         glBindFramebuffer(GLenum(GL_FRAMEBUFFER), framebuffer)
         glBindRenderbuffer(GLenum(GL_RENDERBUFFER), colorRenderbuffer)
-        ctx.renderbufferStorage(Int(GL_RENDERBUFFER), from: eaglLayer)
+        guard ctx.renderbufferStorage(Int(GL_RENDERBUFFER), from: eaglLayer) else { return }
+        glGetRenderbufferParameteriv(GLenum(GL_RENDERBUFFER), GLenum(GL_RENDERBUFFER_WIDTH), &drawableWidth)
+        glGetRenderbufferParameteriv(GLenum(GL_RENDERBUFFER), GLenum(GL_RENDERBUFFER_HEIGHT), &drawableHeight)
         glFramebufferRenderbuffer(GLenum(GL_FRAMEBUFFER), GLenum(GL_COLOR_ATTACHMENT0),
                                   GLenum(GL_RENDERBUFFER), colorRenderbuffer)
 
@@ -166,6 +185,7 @@ final class MPVGLKView: UIView, MPVRenderHost {
             AppLog.error("framebuffer 不完整 status=\(status) bounds=\(Int(bounds.width))x\(Int(bounds.height))")
             return
         }
+        allocatedSize = pixelSize
         if !attached {
             attached = true
             AppLog.info("iOS framebuffer 就绪 \(Int(bounds.width * contentScaleFactor))x\(Int(bounds.height * contentScaleFactor))")
@@ -175,11 +195,21 @@ final class MPVGLKView: UIView, MPVRenderHost {
     }
 
     func destroyRenderContext() {
-        guard let ctx = renderContext else { return }
-        renderContext = nil
         displayLink?.invalidate()
         displayLink = nil
+        guard let ctx = renderContext else { return }
+        EAGLContext.setCurrent(context)
+        renderContext = nil
         mpv_render_context_free(ctx)
+    }
+
+    func tearDown() {
+        destroyRenderContext()
+        EAGLContext.setCurrent(context)
+        if framebuffer != 0 { glDeleteFramebuffers(1, &framebuffer); framebuffer = 0 }
+        if colorRenderbuffer != 0 { glDeleteRenderbuffers(1, &colorRenderbuffer); colorRenderbuffer = 0 }
+        attached = false
+        allocatedSize = .zero
     }
 
     deinit {
@@ -197,6 +227,10 @@ struct MPVSurfaceiOS: UIViewRepresentable {
 
     func updateUIView(_ uiView: MPVGLKView, context: Context) {
         uiView.core = core
+    }
+
+    static func dismantleUIView(_ uiView: MPVGLKView, coordinator: ()) {
+        uiView.tearDown()
     }
 }
 #endif

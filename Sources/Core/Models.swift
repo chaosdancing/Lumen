@@ -63,33 +63,33 @@ struct MediaSourceConfig: Identifiable, Codable, Hashable {
     /// 用户可能把整条 URL 粘进"主机"字段，这里统一拆成 host / port / basePath
     func normalized() -> MediaSourceConfig {
         var copy = self
-        var raw = copy.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = copy.host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return copy }
 
-        if let r = raw.range(of: "://") {
-            let scheme = raw[..<r.lowerBound].lowercased()
+        // 用 URLComponents 解析，而不是手拆冒号：带 `http://` 粘贴进主机栏时，
+        // 不能让 URL 的默认 80 覆盖用户在端口栏明确填写的 5005。
+        let hasScheme = raw.range(of: "://") != nil
+        let parseInput = hasScheme ? raw : "\(copy.usesHTTPS ? "https" : "http")://\(raw)"
+        guard let components = URLComponents(string: parseInput),
+              let parsedHost = components.host, !parsedHost.isEmpty else {
+            return copy
+        }
+        if hasScheme, let scheme = components.scheme?.lowercased() {
             if scheme == "https" { copy.usesHTTPS = true }
             if scheme == "http" { copy.usesHTTPS = false }
-            raw = String(raw[r.upperBound...])
         }
-        if raw.hasSuffix("/") { raw.removeLast() }
+        copy.host = parsedHost
 
-        // 拆出路径
-        if let slash = raw.firstIndex(of: "/") {
-            let path = String(raw[slash...])
-            raw = String(raw[..<slash])
-            if !path.isEmpty, copy.basePath == "/" || copy.basePath.isEmpty {
-                copy.basePath = path
-            }
+        // 端口栏是显式配置，优先级高于粘贴 URL；只有它为空时才取 URL 内端口。
+        if copy.port == 0, let parsedPort = components.port {
+            copy.port = parsedPort
         }
-        // 拆出端口
-        let parts = raw.split(separator: ":")
-        if parts.count == 2, let p = Int(parts[1]) {
-            copy.host = String(parts[0])
-            if copy.port == 0 { copy.port = p }
-        } else {
-            copy.host = raw
+        let parsedPath = components.percentEncodedPath.removingPercentEncoding
+            ?? components.percentEncodedPath
+        if !parsedPath.isEmpty, parsedPath != "/", copy.basePath == "/" || copy.basePath.isEmpty {
+            copy.basePath = parsedPath
         }
+
         // 端口留空时按 scheme 兜底
         if copy.port == 0 {
             copy.port = copy.usesHTTPS ? 443 : 80

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 #if os(macOS)
 import AppKit
 #endif
@@ -7,10 +8,63 @@ import AppKit
 enum DebugProbes {
     @MainActor
     static func run(store: AppStore) async {
+        await webDAVProbe(store: store)
         await mpvProbe(store: store)
         await metaIsolationProbe(store: store)
         await mpvWindowProbe(store: store)
         await thumbProbe(store: store)
+    }
+
+    /// 仅供真机排障：结果落入独立文件，不包含用户名、密码或完整 URL。
+    @MainActor
+    private static func webDAVProbe(store: AppStore) async {
+        #if DEBUG
+        let flag = StorePaths.root.appendingPathComponent("webdav-probe.flag")
+        guard let raw = try? String(contentsOf: flag, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: flag)
+        let resultURL = StorePaths.root.appendingPathComponent("webdav-probe-result.txt")
+        let probeLines = raw.split(whereSeparator: \.isNewline).map(String.init)
+        let id = probeLines.first ?? ""
+        guard let config = store.sources.first(where: { $0.id.uuidString == id }) else {
+            try? "source-not-found".write(to: resultURL, atomically: true, encoding: .utf8)
+            return
+        }
+        let normalized = config.normalized()
+        if probeLines.count == 2 {
+            let actual = SHA256.hash(data: Data("\(normalized.username):\(normalized.password)".utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            AppLog.info("DAV credential matchesCurl=\(actual == probeLines[1])")
+        }
+        // 对照旧版请求与 curl 的最小 PROPFIND，凭据只取设备内存。
+        for isolated in [false, true] {
+            let settings = isolated ? URLSessionConfiguration.ephemeral : .default
+            if isolated { settings.urlCredentialStorage = nil }
+            let session = URLSession(configuration: settings,
+                                     delegate: LocalNetworkTrustDelegate.shared, delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            do {
+                let source = try MediaSourceFactory.make(normalized)
+                var request = URLRequest(url: try await source.playURL(for: ""))
+                request.timeoutInterval = 10
+                request.httpMethod = "PROPFIND"
+                request.setValue("1", forHTTPHeaderField: "Depth")
+                request.setValue("Basic " + Data("\(normalized.username):\(normalized.password)".utf8).base64EncodedString(), forHTTPHeaderField: "Authorization")
+                let (_, response) = try await session.data(for: request)
+                AppLog.info("DAV comparison isolated=\(isolated) status=\((response as? HTTPURLResponse)?.statusCode ?? 0)")
+            } catch {
+                AppLog.info("DAV comparison isolated=\(isolated) error=\((error as NSError).code)")
+            }
+        }
+        do {
+            let source = try WebDAVMediaSource(config: normalized)
+            let entries = try await source.list(path: "")
+            try? "success host=\(normalized.host) port=\(normalized.port) entries=\(entries.count)"
+                .write(to: resultURL, atomically: true, encoding: .utf8)
+        } catch {
+            try? "failure host=\(normalized.host) port=\(normalized.port) code=\((error as NSError).code)"
+                .write(to: resultURL, atomically: true, encoding: .utf8)
+        }
+        #endif
     }
 
     /// 诊断：容器里放 `shot.flag`（内容可写 `宽x高`）→ 把主窗口内容截成 shot.png。

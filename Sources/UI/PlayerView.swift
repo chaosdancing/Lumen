@@ -135,9 +135,7 @@ struct PlayerView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "play.slash").font(.largeTitle)
                     Text(engine.errorText!).multilineTextAlignment(.center).frame(maxWidth: 460)
-                    Text("当前内核是 AVPlayer，只支持 MP4/MOV 与 HTTP 直链。MKV/AVI/ISO 需要里程碑 2 的 MPVKit。")
-                        .font(.caption).foregroundStyle(.white.opacity(0.7))
-                        .multilineTextAlignment(.center).frame(maxWidth: 460)
+                    Button("关闭") { closePlayer() }.buttonStyle(.borderedProminent)
                 }
                 .foregroundStyle(.white)
                 .padding(24)

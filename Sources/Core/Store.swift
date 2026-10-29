@@ -33,7 +33,9 @@ enum Keychain {
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status != errSecSuccess { AppLog.error("Keychain 读取失败 status=\(status)") }
+        guard status == errSecSuccess,
               let data = item as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
@@ -74,12 +76,15 @@ enum Credentials {
     }
 
     static func migrateLegacy() {
-        #if DEBUG
         let map = devMap()
         guard !map.isEmpty else { return }
-        let migrated = map.allSatisfy { Keychain.set($0.value, account: $0.key) }
+        // 已保存的钥匙串凭据优先；旧开发缓存不能在重启时覆盖新密码。
+        let migrated = map.allSatisfy { account, legacyValue in
+            if let existing = Keychain.get(account: account), !existing.isEmpty { return true }
+            return Keychain.set(legacyValue, account: account)
+        }
+        AppLog.info("旧凭据迁移 count=\(map.count) success=\(migrated)")
         if migrated { try? FileManager.default.removeItem(at: devFileURL) }
-        #endif
     }
 
     static func delete(_ id: UUID) {
@@ -147,6 +152,22 @@ final class AppStore: ObservableObject {
     // MARK: 读写
 
     private func load() {
+        #if DEBUG
+        // 用户明确要求重置时，由设备容器内的一次性标记指定唯一文件源。
+        let resetFlag = StorePaths.root.appendingPathComponent("reset-source-credential.flag")
+        if let raw = try? String(contentsOf: resetFlag, encoding: .utf8),
+           let id = UUID(uuidString: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+           let data = try? Data(contentsOf: StorePaths.sources),
+           let configs = try? JSONDecoder().decode([MediaSourceConfig].self, from: data),
+           configs.contains(where: { $0.id == id }) {
+            Credentials.delete(id)
+            let cleared = Credentials.get(id) == nil
+            AppLog.info("凭据重置 source=\(id) cleared=\(cleared)")
+            if cleared { try? FileManager.default.removeItem(at: resetFlag) }
+        }
+        #endif
+        // 先迁移再读取，保证首次启动即使用钥匙串中的最新凭据。
+        Credentials.migrateLegacy()
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let data = try? Data(contentsOf: StorePaths.sources),
@@ -156,7 +177,6 @@ final class AppStore: ObservableObject {
                 copy.password = Credentials.get(cfg.id) ?? ""
                 return copy
             }
-            Credentials.migrateLegacy()
         }
         if let data = try? Data(contentsOf: StorePaths.library),
            let list = try? decoder.decode([MediaItem].self, from: data) {
@@ -195,8 +215,9 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func addSource(_ config: MediaSourceConfig) -> Bool {
-        if !config.password.isEmpty && !Credentials.set(config.password, for: config.id) { return false }
-        sources.append(config)
+        let normalized = config.normalized()
+        if !normalized.password.isEmpty && !Credentials.set(normalized.password, for: normalized.id) { return false }
+        sources.append(normalized)
         persist()
         return true
     }
@@ -204,9 +225,10 @@ final class AppStore: ObservableObject {
     @discardableResult
     func updateSource(_ config: MediaSourceConfig) -> Bool {
         guard let idx = sources.firstIndex(where: { $0.id == config.id }) else { return false }
-        if !config.password.isEmpty && !Credentials.set(config.password, for: config.id) { return false }
-        if config.password.isEmpty { Credentials.delete(config.id) }
-        sources[idx] = config
+        let normalized = config.normalized()
+        if !normalized.password.isEmpty && !Credentials.set(normalized.password, for: normalized.id) { return false }
+        if normalized.password.isEmpty { Credentials.delete(normalized.id) }
+        sources[idx] = normalized
         persist()
         return true
     }
@@ -384,9 +406,14 @@ final class AppStore: ObservableObject {
 
     func playbackTarget(for item: MediaItem) async throws -> PlaybackTarget {
         guard let config = source(for: item.sourceID) else { throw SourceError.invalidURL }
+        let saved = Credentials.get(config.id)
+        AppLog.info("播放凭据 source=\(config.id) memoryPresent=\(!config.password.isEmpty) savedPresent=\(saved?.isEmpty == false) matches=\(saved == config.password)")
         let source = try MediaSourceFactory.make(config)
         let url = try await source.playURL(for: item.path)
-        return PlaybackTarget(url: url, headers: source.playbackHeaders(), accessLease: source)
+        return PlaybackTarget(url: url,
+                              headers: source.playbackHeaders(),
+                              credentials: source.playbackCredentials(),
+                              accessLease: source)
     }
 
     /// 从某个源里读文件字节（封面/字幕共用）

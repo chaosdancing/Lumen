@@ -831,18 +831,60 @@ private struct SourceSidebarRow: View {
 
 
 /// 每个 tab 自己的导航栈：显式 path，点卡片直接 append
+#if os(iOS)
 struct BrowseTab: View {
     let destination: BrowseDestination
     @StateObject private var nav = NavModel()
+    @State private var selection: BrowseDestination = .home
+
+    private let destinations: [BrowseDestination] = [
+        .home, .movies, .series, .recentlyAdded, .continueWatching,
+        .genres, .years, .ratings, .certifications, .favorites
+    ]
+
+    private func select(_ destination: BrowseDestination) {
+        nav.path = NavigationPath()
+        selection = destination
+    }
+
+    @ViewBuilder private var content: some View {
+        switch selection {
+        case .years: LibraryCategoryView(kind: .years)
+        case .genres: LibraryCategoryView(kind: .genres)
+        case .ratings: LibraryCategoryView(kind: .ratings)
+        case .certifications: LibraryCategoryView(kind: .certifications)
+        default: BrowseView(destination: selection, onOpenDestination: select)
+        }
+    }
 
     var body: some View {
         NavigationStack(path: $nav.path) {
-            BrowseView(destination: destination)
+            content
                 .detailDestinations()
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Menu {
+                            ForEach(destinations, id: \.self) { destination in
+                                Button { select(destination) } label: {
+                                    Label(destination.title, systemImage: selection == destination ? "checkmark" : destination.symbol)
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(selection.title).font(.headline)
+                                Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+                            }
+                        }
+                        .accessibilityLabel("媒体库分类：\(selection.title)")
+                        .accessibilityIdentifier("library.categories")
+                    }
+                }
         }
+        .onAppear { if selection == .home { selection = destination } }
         .environmentObject(nav)   // 挂在栈外面，push 出来的页面也能拿到
     }
 }
+#endif
 
 // MARK: - 导航目标（只注册一次，避免多层 NavigationStack 重复注册导致 push 变成替换）
 

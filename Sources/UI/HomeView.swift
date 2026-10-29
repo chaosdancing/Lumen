@@ -218,7 +218,13 @@ struct BrowseView: View {
         }
     }
 
+    #if os(iOS)
+    private let grid = [GridItem(.adaptive(minimum: 150, maximum: 190), spacing: 18)]
+    private let rowPosterWidth: CGFloat = 154
+    #else
     private let grid = [GridItem(.adaptive(minimum: 112, maximum: 146), spacing: 14)]
+    private let rowPosterWidth: CGFloat = 118
+    #endif
 
     /// 轮播高度：跟窗口走，比详情页头图略矮一点，给下方分区留位置
     @State private var viewport: CGSize = CGSize(width: 1100, height: 700)
@@ -299,6 +305,7 @@ struct BrowseView: View {
         }
         .measureViewport { viewport = $0 }
         #if os(iOS)
+        .ignoresSafeArea(.container, edges: destination == .home && prefs.showCarousel && entries.count > 1 ? .top : [])
         .navigationTitle(category?.title ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
@@ -480,7 +487,7 @@ struct BrowseView: View {
                                        item: entry.posterItem,
                                        badge: displayBadge(for: entry),
                                        progress: progress(for: entry),
-                                       width: 118)
+                                       width: rowPosterWidth)
                         }
                     }
                 }

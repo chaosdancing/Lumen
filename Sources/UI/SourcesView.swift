@@ -367,13 +367,25 @@ struct AddSourceSheet: View {
             if kind == .webdav || kind == .smb || kind == .emby || kind == .jellyfin {
                 field("用户名") {
                     TextField("用户名", text: $username).textFieldStyle(.plain)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
                 }
                 field(kind.isMediaServer ? "API Key" : "密码") {
                     HStack(spacing: 6) {
                         if showPassword {
                             TextField("", text: $password).textFieldStyle(.plain)
+                                .autocorrectionDisabled()
+                                #if os(iOS)
+                                .textInputAutocapitalization(.never)
+                                #endif
                         } else {
                             SecureField("", text: $password).textFieldStyle(.plain)
+                                .autocorrectionDisabled()
+                                #if os(iOS)
+                                .textInputAutocapitalization(.never)
+                                #endif
                         }
                         Button { showPassword.toggle() } label: {
                             Image(systemName: showPassword ? "eye.slash" : "eye")
