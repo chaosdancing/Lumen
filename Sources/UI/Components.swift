@@ -21,6 +21,8 @@ struct ArtworkView: View {
 
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var artwork: ArtworkStore
+    @ObservedObject private var metadata = MetadataStore.shared
+    @ObservedObject private var preferences = Preferences.shared
     @State private var image: PlatformImage?
     static var thumbLogCount = 0
 
@@ -51,13 +53,29 @@ struct ArtworkView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: "\(item?.id ?? "")#\(variant)") {
-            guard let item else { return }
+        .task(id: taskIdentity) {
+            let identity = taskIdentity
             image = nil
-            if let hit = artwork.cached(item.id, variant: variant) { image = hit; return }
+            guard let item else { return }
+            if let hit = artwork.cached(for: item, variant: variant, in: store) {
+                guard !Task.isCancelled, identity == taskIdentity else { return }
+                image = hit
+                return
+            }
             let loaded = await artwork.image(for: item, variant: variant, in: store)
+            guard !Task.isCancelled, identity == taskIdentity else { return }
             withAnimation(.easeOut(duration: 0.18)) { image = loaded }
         }
+    }
+
+    private var taskIdentity: String {
+        guard let item else { return "empty" }
+        // Core's key includes artworkMetadata paths/provenance and both backdrop/poster fallback.
+        let cacheIdentity = artwork.requestIdentity(for: item, variant: variant, in: store)
+        let poster = metadata.cachedPosterURL(for: item)?.absoluteString ?? ""
+        let backdrop = metadata.backdropURL(for: item)?.absoluteString ?? ""
+        let urls = String(decoding: (try? JSONEncoder().encode([poster, backdrop])) ?? Data(), as: UTF8.self)
+        return "\(cacheIdentity)#\(urls)"
     }
 
     private var placeholder: some View {
@@ -81,6 +99,96 @@ struct ArtworkView: View {
             [Color(red: 0.22, green: 0.14, blue: 0.14), Color(red: 0.10, green: 0.07, blue: 0.07)]
         ]
         return LinearGradient(colors: palettes[seed], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+// MARK: - Persistent remote and source-relative images
+
+@MainActor
+enum CachedImageLoader {
+    static func cached(path: String, sourceID: UUID) -> PlatformImage? {
+        let file = MetadataCache.imageURL(identity: MetadataCache.imageIdentity(path: path, sourceID: sourceID))
+        guard let data = try? Data(contentsOf: file), MetadataCache.validImage(data) else { return nil }
+        return PlatformImage(data: data)
+    }
+
+    static func load(path: String, source: MediaSource?,
+                     shouldCommit: @escaping @MainActor () -> Bool) async -> PlatformImage? {
+        let sourceID = source?.config.id ?? remoteSourceID
+        if let source {
+            do {
+                try await MetadataImageCache.shared.persist(path: path, source: source,
+                                                           shouldCommit: shouldCommit)
+            } catch {
+                if !Task.isCancelled, shouldCommit() {
+                    AppLog.info("Image cache: \(error.localizedDescription)")
+                }
+            }
+        } else if cached(path: path, sourceID: sourceID) == nil,
+                  let url = URL(string: path),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                  url.user == nil, url.password == nil {
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 20
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard !Task.isCancelled, shouldCommit(),
+                      let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                      MetadataCache.validImage(data) else { return nil }
+                let file = MetadataCache.imageURL(identity: MetadataCache.imageIdentity(path: path, sourceID: sourceID))
+                try data.write(to: file, options: .atomic)
+            } catch { return nil }
+        }
+        guard !Task.isCancelled, shouldCommit() else { return nil }
+        return cached(path: path, sourceID: sourceID)
+    }
+
+    static let remoteSourceID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    static func tmdbPath(_ path: String?, size: String, isSourceRelative: Bool = false) -> String? {
+        guard let path, !path.isEmpty else { return nil }
+        if isSourceRelative || path.hasPrefix("http") { return path }
+        return "https://image.tmdb.org/t/p/\(size)\(path.hasPrefix("/") ? "" : "/")\(path)"
+    }
+}
+
+struct CachedRemoteImage<Placeholder: View>: View {
+    let path: String?
+    var sourceID: UUID?
+    @ViewBuilder var placeholder: () -> Placeholder
+
+    @EnvironmentObject private var store: AppStore
+    @State private var image: PlatformImage?
+
+    private struct Request: Equatable {
+        let path: String?
+        let source: MediaSourceConfig?
+        let revision: Int
+    }
+
+    private var request: Request {
+        Request(path: path, source: sourceID.flatMap { store.source(for: $0) },
+                revision: store.artworkRevision)
+    }
+
+    var body: some View {
+        ZStack {
+            placeholder()
+            if let image { Image(platformImage: image).resizable().scaledToFill() }
+        }
+        .task(id: request) {
+            let captured = request
+            image = nil
+            guard let path = captured.path else { return }
+            let id = captured.source?.id ?? CachedImageLoader.remoteSourceID
+            image = CachedImageLoader.cached(path: path, sourceID: id)
+            let source = captured.source.flatMap { try? MediaSourceFactory.make($0) }
+            let loaded = await CachedImageLoader.load(path: path, source: source) {
+                request == captured
+            }
+            guard !Task.isCancelled, request == captured else { return }
+            if let loaded { image = loaded }
+        }
     }
 }
 

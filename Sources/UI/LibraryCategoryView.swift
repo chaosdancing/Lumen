@@ -51,9 +51,6 @@ struct LibraryCategoryView: View {
         .navigationTitle(kind.title)
         .task(id: kind) {
             await metadata.scrapeAll(items: store.library, in: store)
-            if kind == .certifications {
-                await metadata.fillMissingCertifications(items: store.library)
-            }
         }
     }
 

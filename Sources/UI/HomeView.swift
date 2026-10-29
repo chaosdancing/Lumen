@@ -111,6 +111,7 @@ extension BrowseEntry {
             genres: meta?.genres ?? [],
             rating: meta?.rating,
             certification: meta?.certification,
+            certificationRegion: meta?.certificationRegion,
             isSeries: mediaItems.first?.seriesTitle != nil,
             addedAt: sortDate,
             isWatched: !mediaItems.isEmpty && mediaItems.allSatisfy { store.record(for: $0.id)?.isFinished == true },
@@ -297,12 +298,9 @@ struct BrowseView: View {
             }
         }
         }
-        .background {
-            if destination == .home || destination == .recentlyAdded {
-                // heroItem 由轮播回调设置，首帧可能还是 nil → 退回第一条，别让背景空着
-                BlurredBackdrop(item: heroItem ?? entries.first?.posterItem, scheme: colorScheme)
-            }
-        }
+        .background(HomeBrowseBackdrop(shows: destination == .home || destination == .recentlyAdded,
+                                       item: heroItem ?? entries.first?.posterItem,
+                                       scheme: colorScheme))
         .measureViewport { viewport = $0 }
         #if os(iOS)
         .ignoresSafeArea(.container, edges: destination == .home && prefs.showCarousel && !entries.isEmpty ? .top : [])
@@ -346,10 +344,8 @@ struct BrowseView: View {
             }
         }
         .task(id: destination) {
-            if destination == .genres || destination == .years || destination == .ratings {
+            if [.genres, .years, .ratings, .certifications].contains(destination) {
                 await metaStore.scrapeAll(items: store.library, in: store)
-            } else if destination == .certifications {
-                await metaStore.fillMissingCertifications(items: store.library)
             }
         }
         .toolbar {
@@ -598,7 +594,7 @@ struct BrowseView: View {
             let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             let results = needle.isEmpty
                 ? LibraryQuery.recommendations(snapshot.items)
-                : LibraryQuery.search(snapshot.items, text: needle)
+                : LibraryQuery.results(snapshot.items, search: needle)
             return snapshot.entries(for: results)
         }
 
@@ -734,6 +730,22 @@ struct BrowseView: View {
 }
 
 // MARK: - 列表行
+
+
+private struct HomeBrowseBackdrop: View {
+    let shows: Bool
+    let item: MediaItem?
+    let scheme: ColorScheme
+
+    var body: some View {
+        Group {
+            if shows {
+                // heroItem 由轮播回调设置，首帧可能还是 nil → 退回第一条，别让背景空着
+                BlurredBackdrop(item: item, scheme: scheme)
+            }
+        }
+    }
+}
 
 private struct BrowseListRow: View {
     let entry: BrowseEntry

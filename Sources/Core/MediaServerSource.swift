@@ -34,10 +34,6 @@ final class MediaServerSource: CatalogSource, @unchecked Sendable {
 
     private var apiKey: String { config.password }
 
-    func playbackHeaders() -> [String: String] {
-        ["X-Emby-Token": apiKey]
-    }
-
     private func request(_ path: String, query: [URLQueryItem] = []) -> URLRequest {
         var comps = URLComponents(url: base.appendingPathComponent(path),
                                   resolvingAgainstBaseURL: false)!
@@ -61,34 +57,88 @@ final class MediaServerSource: CatalogSource, @unchecked Sendable {
     // MARK: 条目库
 
     func fetchCatalog() async throws -> [MediaItem] {
-        let query = [
-            URLQueryItem(name: "Recursive", value: "true"),
-            URLQueryItem(name: "IncludeItemTypes", value: "Movie,Episode"),
-            URLQueryItem(name: "Fields", value: "Path,ProductionYear,ParentIndexNumber,IndexNumber,SeriesName,RunTimeTicks,ImageTags,MediaSources"),
-            URLQueryItem(name: "ImageTypeLimit", value: "1"),
-            URLQueryItem(name: "EnableImageTypes", value: "Primary"),
-            URLQueryItem(name: "Limit", value: "500")
-        ]
-        var allItems: [[String: Any]] = []
+        let pageSize = 500
+        let maxPageCount = 100
+        var startIndex = 0
+        var pageCount = 0
+        var dictionaries: [[String: Any]] = []
+        var seenIDs: Set<String> = []
+        var reportedTotal: Int?
+
         while true {
-            let pageQuery = query + [URLQueryItem(name: "StartIndex", value: String(allItems.count))]
-            let (data, response) = try await session.data(for: request("Items", query: pageQuery))
+            guard pageCount < maxPageCount else {
+                throw SourceError.invalidResponse("分页超过 \(maxPageCount) 页")
+            }
+            pageCount += 1
+            let query = [
+                URLQueryItem(name: "Recursive", value: "true"),
+                URLQueryItem(name: "IncludeItemTypes", value: "Movie,Episode"),
+                URLQueryItem(name: "Fields", value: "Path,ProductionYear,ParentIndexNumber,IndexNumber,SeriesName,RunTimeTicks,ImageTags,MediaSources"),
+                URLQueryItem(name: "ImageTypeLimit", value: "1"),
+                URLQueryItem(name: "EnableImageTypes", value: "Primary"),
+                URLQueryItem(name: "EnableTotalRecordCount", value: "true"),
+                URLQueryItem(name: "SortBy", value: "SortName"),
+                URLQueryItem(name: "SortOrder", value: "Ascending"),
+                URLQueryItem(name: "StartIndex", value: String(startIndex)),
+                URLQueryItem(name: "Limit", value: String(pageSize))
+            ]
+            let (data, response) = try await session.data(for: request("Items", query: query))
             guard let http = response as? HTTPURLResponse else { throw SourceError.badResponse(0) }
             if http.statusCode == 401 || http.statusCode == 403 { throw SourceError.unauthorized }
-            guard (200..<300).contains(http.statusCode) else { throw SourceError.badResponse(http.statusCode) }
-            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let page = root["Items"] as? [[String: Any]] else {
+            guard (200..<300).contains(http.statusCode) else {
                 throw SourceError.badResponse(http.statusCode)
             }
-            if let firstID = page.first?["Id"] as? String,
-               firstID == allItems.first?["Id"] as? String { break }
-            allItems.append(contentsOf: page)
+            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let page = root["Items"] as? [[String: Any]] else {
+                throw SourceError.invalidResponse("Items 字段缺失")
+            }
+
             let total = root["TotalRecordCount"] as? Int
-            if page.isEmpty || total.map({ allItems.count >= $0 }) == true ||
-                (total == nil && page.count < 500) { break }
+            if let total {
+                guard total >= 0 else {
+                    throw SourceError.invalidResponse("TotalRecordCount 无效")
+                }
+                reportedTotal = total
+            }
+            if page.isEmpty {
+                if let total, total > 0, seenIDs.count < total {
+                    throw SourceError.invalidResponse("分页提前结束（\(seenIDs.count)/\(total)）")
+                }
+                break
+            }
+
+            var newItemCount = 0
+            for dictionary in page {
+                guard let id = dictionary["Id"] as? String, !id.isEmpty else { continue }
+                if seenIDs.insert(id).inserted {
+                    dictionaries.append(dictionary)
+                    newItemCount += 1
+                }
+            }
+            guard newItemCount > 0 else {
+                throw SourceError.invalidResponse("分页未返回新条目（StartIndex=\(startIndex)）")
+            }
+
+            startIndex += page.count
+            if let total {
+                if startIndex >= total {
+                    guard seenIDs.count >= total else {
+                        throw SourceError.invalidResponse(
+                            "分页条目不完整（\(seenIDs.count)/\(total)）"
+                        )
+                    }
+                    break
+                }
+            } else if page.count < pageSize {
+                break
+            }
         }
 
-        return allItems.compactMap { dict -> MediaItem? in
+        if let total = reportedTotal, seenIDs.count < total {
+            throw SourceError.invalidResponse("分页条目不完整（\(seenIDs.count)/\(total)）")
+        }
+
+        return dictionaries.compactMap { dict -> MediaItem? in
             guard let id = dict["Id"] as? String else { return nil }
             let name = dict["Name"] as? String ?? "未命名"
             let series = dict["SeriesName"] as? String
@@ -125,7 +175,10 @@ final class MediaServerSource: CatalogSource, @unchecked Sendable {
     func playURL(for path: String) async throws -> URL {
         var comps = URLComponents(url: base.appendingPathComponent("Videos/\(path)/stream"),
                                   resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "static", value: "true")]
+        comps.queryItems = [
+            URLQueryItem(name: "static", value: "true"),
+            URLQueryItem(name: "api_key", value: apiKey)
+        ]
         guard let url = comps.url else { throw SourceError.invalidURL }
         return url
     }

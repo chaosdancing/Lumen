@@ -90,6 +90,8 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
 
     func close() {
         removeMonitor()
+        onSingleClick = nil
+        onDoubleClick = nil
         guard let window else { return }
         self.window = nil
         onClose = nil
@@ -99,6 +101,8 @@ final class PlayerWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         removeMonitor()
+        onSingleClick = nil
+        onDoubleClick = nil
         let handler = onClose
         window = nil
         onClose = nil

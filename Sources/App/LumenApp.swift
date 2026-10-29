@@ -915,5 +915,8 @@ extension View {
             case .movie(let item):   MediaDetailView(movie: item)
             }
         }
+        .navigationDestination(for: PersonRoute.self) { route in
+            PersonView(route: route)
+        }
     }
 }

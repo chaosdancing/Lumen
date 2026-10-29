@@ -174,6 +174,7 @@ enum SourceError: LocalizedError {
     case badResponse(Int)
     case missingBookmark
     case invalidURL
+    case invalidResponse(String)
 
     var errorDescription: String? {
         switch self {
@@ -182,6 +183,7 @@ enum SourceError: LocalizedError {
         case .badResponse(let c):    return "服务端返回 \(c)"
         case .missingBookmark:       return "该文件夹未授权，请重新添加"
         case .invalidURL:            return "地址无效"
+        case .invalidResponse(let s): return "服务端响应无效：\(s)"
         }
     }
 }
@@ -191,7 +193,7 @@ enum SourceError: LocalizedError {
 enum MediaFileType {
     static let video: Set<String> = [
         "mp4", "m4v", "mov", "mkv", "avi", "wmv", "flv", "webm",
-        "ts", "m2ts", "mpg", "mpeg", "rmvb", "rm", "iso", "strm"
+        "ts", "m2ts", "mpg", "mpeg", "rmvb", "rm", "iso", "strm", "m3u8"
     ]
     static let subtitle: Set<String> = ["srt", "ass", "ssa", "vtt", "sub", "sup"]
     /// 封面图 / 背景图（Emby、Jellyfin、Kodi 的 -poster/-fanart/-thumb）

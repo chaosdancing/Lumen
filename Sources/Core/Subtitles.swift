@@ -23,15 +23,40 @@ enum SubtitleParser {
         SubtitleFormat(rawValue: (path as NSString).pathExtension.lowercased())
     }
 
-    /// 带编码嗅探的文本解码：UTF-8 → UTF-16 → GB18030 → Latin1
+    /// 带编码嗅探的文本解码：UTF-8 → 可确认的 UTF-16 → GB18030 → Latin1
     static func decodeText(_ data: Data) -> String {
         if let s = String(data: data, encoding: .utf8) { return s }
-        if let s = String(data: data, encoding: .utf16) { return s }
-        if let s = String(data: data, encoding: .utf16LittleEndian), s.contains("\n") { return s }
+        let bytes = [UInt8](data.prefix(4096))
+        if bytes.starts(with: [0xFF, 0xFE]) || bytes.starts(with: [0xFE, 0xFF]) {
+            if let s = String(data: data, encoding: .utf16) { return s }
+        } else if let encoding = utf16EncodingForNullPattern(bytes),
+                  let s = String(data: data, encoding: encoding) {
+            return s
+        }
         let gb = CFStringConvertEncodingToNSStringEncoding(
             CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
         if let s = String(data: data, encoding: String.Encoding(rawValue: gb)) { return s }
         return String(data: data, encoding: .isoLatin1) ?? ""
+    }
+
+    private static func utf16EncodingForNullPattern(_ bytes: [UInt8]) -> String.Encoding? {
+        let pairCount = bytes.count / 2
+        guard pairCount >= 4 else { return nil }
+        var evenNulls = 0
+        var oddNulls = 0
+        for pair in 0..<pairCount {
+            if bytes[pair * 2] == 0 { evenNulls += 1 }
+            if bytes[pair * 2 + 1] == 0 { oddNulls += 1 }
+        }
+        let dominantMinimum = max(3, pairCount * 3 / 5)
+        let minorityMaximum = pairCount / 5
+        if oddNulls >= dominantMinimum, evenNulls <= minorityMaximum {
+            return .utf16LittleEndian
+        }
+        if evenNulls >= dominantMinimum, oddNulls <= minorityMaximum {
+            return .utf16BigEndian
+        }
+        return nil
     }
 
     static func parse(data: Data, path: String) -> [SubtitleCue] {
@@ -179,7 +204,6 @@ enum SubtitleTimeline {
         // 往回找可能仍有效的（长台词重叠）
         while i >= 0 {
             if cues[i].contains(time) { return i }
-            if cues[i].end < time - 0.5 { break }
             i -= 1
         }
         return nil

@@ -45,31 +45,35 @@ struct SettingsView: View {
                     content
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.top, 26)
-                .padding(.bottom, 26)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 18)
             }
         }
-        .frame(width: 880, height: 620)
         #if os(macOS)
+        .frame(minWidth: 700, idealWidth: 780, maxWidth: 880, minHeight: 480, idealHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
+        #else
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         #endif
     }
 
     // MARK: 顶部标签栏
 
     private var tabBar: some View {
-        HStack(spacing: 2) {
+        ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 4) {
             ForEach(SettingsTab.allCases) { item in
                 Button {
                     tab = item
                 } label: {
-                    VStack(spacing: 5) {
+                    HStack(spacing: 6) {
                         Image(systemName: item.symbol)
-                            .font(.system(size: 19, weight: .regular))
+                            .font(.system(size: 13, weight: .regular))
                         Text(item.title)
-                            .font(.system(size: 11))
+                            .font(.system(size: 12))
                     }
-                    .frame(width: 104, height: 60)
+                    .padding(.horizontal, 10)
+                    .frame(height: 44)
                     .foregroundStyle(tab == item ? Color.green : Color.secondary)
                     .background(
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -80,9 +84,9 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 12)
+        }
+        .frame(height: 52)
     }
 
     @ViewBuilder
@@ -107,18 +111,28 @@ struct PrefRow<Control: View>: View {
     @ViewBuilder var control: () -> Control
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+        HStack(alignment: .top, spacing: 14) {
             Text(label)
                 .font(.system(size: 13))
                 .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-                .frame(width: labelWidth, alignment: .trailing)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 176, alignment: .trailing)
+                .padding(.top, 3)
             control()
-            Spacer(minLength: 0)
+                .frame(width: 400, alignment: .leading)
         }
-        .frame(width: 700, alignment: .leading)
-        .padding(.vertical, 7)
+        .frame(width: 590, alignment: .leading)
+        VStack(alignment: .leading, spacing: 8) {
+            if !label.isEmpty {
+                Text(label).font(.system(size: 13, weight: .medium))
+            }
+            control().frame(maxWidth: .infinity, alignment: .leading)
+        }
+        }
+        .frame(maxWidth: 650, alignment: .leading)
+        .padding(.vertical, 6)
     }
 }
 
@@ -192,10 +206,7 @@ private struct GeneralPane: View {
             }
 
             PrefRow(label: "更多评分") {
-                Button { prefs.showMoreRatings.toggle() } label: {
-                    CheckBox(isOn: prefs.showMoreRatings, caption: prefs.showMoreRatings ? "显示" : "隐藏")
-                }
-                .buttonStyle(.plain)
+                Text("暂不支持其他评分来源").font(.caption).foregroundStyle(.secondary)
             }
 
             PrefRow(label: "排序方式:") {
@@ -203,6 +214,7 @@ private struct GeneralPane: View {
                     Label("添加日期", systemImage: "arrow.down").tag("added")
                     Text("名称").tag("title")
                     Text("年份").tag("year")
+                    Text("评分").tag("rating")
                 }
                 .labelsHidden()
                 .frame(width: 190)
@@ -215,7 +227,7 @@ private struct GeneralPane: View {
                     Text("深色").tag("dark")
                 }
                 .labelsHidden()
-                .frame(width: 140)
+                .frame(width: 190)
             }
 
             PrefRow(label: "在线影视数据语言:", labelWidth: 150) {
@@ -227,7 +239,7 @@ private struct GeneralPane: View {
                     Text("日本語").tag("ja-JP")
                 }
                 .labelsHidden()
-                .frame(width: 300)
+                .frame(width: 190)
                 .onChange(of: language) { _, newValue in
                     TMDBClient.setLanguage(newValue == "auto" ? "zh-CN" : newValue)
                 }
@@ -284,16 +296,18 @@ private struct SourcesPane: View {
             Divider().frame(maxWidth: 620).padding(.vertical, 12)
 
             PrefRow(label: "TMDB API Key", labelWidth: 150) {
-                HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
                     if showKey {
-                        TextField("v3 auth", text: $keyText).frame(width: 250)
+                        TextField("v3 auth", text: $keyText)
                     } else {
-                        SecureField("v3 auth", text: $keyText).frame(width: 250)
+                        SecureField("v3 auth", text: $keyText)
                     }
                     Button { showKey.toggle() } label: {
                         Image(systemName: showKey ? "eye.slash" : "eye")
                     }
                     .buttonStyle(.borderless)
+                    }
                     Button("保存") {
                         message = TMDBClient.setAPIKey(keyText.trimmingCharacters(in: .whitespacesAndNewlines))
                             ? "已保存" : "钥匙串保存失败，请检查应用签名"
@@ -303,7 +317,7 @@ private struct SourcesPane: View {
             }
 
             PrefRow(label: "刮削", labelWidth: 150) {
-                HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     Button {
                         Task { await scrape() }
                     } label: {
@@ -325,7 +339,7 @@ private struct SourcesPane: View {
                 Text("在 themoviedb.org 免费申请 API Key。没有 Key 时只读片源目录里的 .nfo / poster.jpg。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: 440, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -395,7 +409,7 @@ private struct PlaybackPane: View {
                     }
                 }
                 .labelsHidden()
-                .frame(width: 120)
+                .frame(width: 190)
             }
             PrefRow(label: "快进间隔:") {
                 Picker("", selection: $prefs.forwardInterval) {
@@ -404,7 +418,7 @@ private struct PlaybackPane: View {
                     }
                 }
                 .labelsHidden()
-                .frame(width: 120)
+                .frame(width: 190)
             }
             PrefRow(label: "快退间隔:") {
                 Picker("", selection: $prefs.rewindInterval) {
@@ -413,14 +427,14 @@ private struct PlaybackPane: View {
                     }
                 }
                 .labelsHidden()
-                .frame(width: 120)
+                .frame(width: 190)
             }
 
             Divider().frame(maxWidth: 620).padding(.vertical, 12)
 
             ForEach(["硬件加速（VideoToolbox）", "自动消除隔行扫描", "强制使用独立显卡", "缓存到磁盘"], id: \.self) { item in
                 PrefRow(label: item) {
-                    Text("需要 libmpv 内核（里程碑 2）")
+                    Text("尚未提供此设置")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
@@ -458,7 +472,7 @@ private struct PlayerUIPane: View {
                     Text("PNG").tag("png")
                 }
                 .labelsHidden()
-                .frame(width: 120)
+                .frame(width: 190)
             }
             PrefRow(label: "截图保存位置") {
                 Text(prefs.resolvedScreenshotFolder.path)
@@ -466,16 +480,11 @@ private struct PlayerUIPane: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(width: 300, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             PrefRow(label: "海报密度:") {
-                Picker("", selection: $prefs.posterColumns) {
-                    Text("自动").tag(0)
-                    Text("较宽").tag(1)
-                    Text("较窄").tag(2)
-                }
-                .labelsHidden()
-                .frame(width: 120)
+                Text("自动适应窗口宽度，暂不支持自定义密度")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -510,7 +519,7 @@ private struct SubtitlePane: View {
                     Text("青色").tag("cyan")
                 }
                 .labelsHidden()
-                .frame(width: 120)
+                .frame(width: 190)
             }
             PrefRow(label: "描边:") {
                 HStack(spacing: 8) {
@@ -531,7 +540,7 @@ private struct SubtitlePane: View {
                 }
             }
             PrefRow(label: "音轨") {
-                Text("默认音轨跟随文件；多音轨切换需要 libmpv 内核")
+                Text("在播放器的音轨菜单中选择；这里暂不提供默认音轨设置")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
             }
@@ -544,7 +553,8 @@ private struct SubtitlePane: View {
                     .foregroundStyle(previewColor)
                     .shadow(color: .black, radius: prefs.subtitleOutline, x: 0, y: 0)
             }
-            .frame(width: 460, height: 92)
+            .frame(maxWidth: 460)
+            .frame(height: 92)
             .padding(.top, 18)
         }
     }
@@ -573,13 +583,13 @@ private struct PrivacyPane: View {
                     .textSelection(.enabled)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(width: 380, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             PrefRow(label: "凭据") {
                 Text("账号密码 / API Key 存在钥匙串；DEBUG 构建额外缓存在本地文件（0600）")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .frame(width: 380, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             PrefRow(label: "网络") {
                 Text("只访问你添加的媒体源与 TMDB；无遥测、无上报")

@@ -67,7 +67,7 @@ final class Preferences: ObservableObject {
         defaultSort = d.string(forKey: "ui.sort") ?? "added"
         appearance = d.string(forKey: "ui.appearance") ?? "auto"
         preferLocalPoster = d.object(forKey: "meta.localPoster") as? Bool ?? true
-        preferNFO = d.object(forKey: "meta.preferNFO") as? Bool ?? false
+        preferNFO = d.object(forKey: "meta.preferNFO") as? Bool ?? true
     }
 
     var resolvedScreenshotFolder: URL {

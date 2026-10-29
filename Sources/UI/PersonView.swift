@@ -5,6 +5,8 @@ import SwiftUI
 struct PersonRoute: Hashable {
     let id: Int
     let name: String
+    var profilePath: String? = nil
+    var sourceID: UUID? = nil
 }
 
 struct PersonCredit: Identifiable {
@@ -21,10 +23,10 @@ struct PersonView: View {
     let route: PersonRoute
 
     @EnvironmentObject private var store: AppStore
+    @ObservedObject private var metaStore = MetadataStore.shared
     @State private var credits: [PersonCredit] = []
     @State private var loading = true
     @State private var errorText: String?
-    @State private var profilePath: String?
 
     private let grid = [GridItem(.adaptive(minimum: 112, maximum: 146), spacing: 14)]
 
@@ -54,20 +56,13 @@ struct PersonView: View {
             .padding(22)
         }
         .navigationTitle(route.name)
-        .task { await load() }
+        .task(id: route) { await load() }
     }
 
     private var header: some View {
         HStack(spacing: 14) {
-            Group {
-                if let url = profileURL(profilePath) {
-                    AsyncImage(url: url) { phase in
-                        if case .success(let img) = phase { img.resizable().scaledToFill() }
-                        else { avatarPlaceholder }
-                    }
-                } else {
-                    avatarPlaceholder
-                }
+            CachedRemoteImage(path: route.profilePath, sourceID: route.sourceID) {
+                avatarPlaceholder
             }
             .frame(width: 64, height: 64)
             .clipShape(Circle())
@@ -93,20 +88,11 @@ struct PersonView: View {
 
     @ViewBuilder
     private func creditTile(_ credit: PersonCredit) -> some View {
-        let matched = matchedItem(for: credit)
+        let matched = matchedTarget(for: credit)
         let content = VStack(alignment: .leading, spacing: 5) {
-            Group {
-                if let url = posterURL(credit.posterPath) {
-                    AsyncImage(url: url) { phase in
-                        if case .success(let img) = phase {
-                            img.resizable().scaledToFill()
-                        } else {
-                            placeholder
-                        }
-                    }
-                } else {
-                    placeholder
-                }
+            CachedRemoteImage(path: CachedImageLoader.tmdbPath(credit.posterPath, size: "w342"),
+                              sourceID: route.sourceID) {
+                placeholder
             }
             .aspectRatio(2.0 / 3.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -124,8 +110,7 @@ struct PersonView: View {
         .contentShape(Rectangle())
 
         if let matched {
-            NavigationLink(value: DetailTarget.movie(matched)) { content }
-                .buttonStyle(.plain)
+            TileTap(target: matched) { content }
         } else {
             content.opacity(0.85)
         }
@@ -139,23 +124,48 @@ struct PersonView: View {
             }
     }
 
-    private func matchedItem(for credit: PersonCredit) -> MediaItem? {
-        let target = TMDBClient.searchableTitle(credit.title).lowercased()
-        guard !target.isEmpty else { return nil }
-        return store.library.first { item in
-            let t = TMDBClient.searchableTitle(item.title).lowercased()
-            return t == target
+    private func matchedTarget(for credit: PersonCredit) -> DetailTarget? {
+        func normalized(_ title: String) -> String {
+            TMDBClient.searchableTitle(title).lowercased()
         }
-    }
+        let title = normalized(credit.title)
+        let year = credit.year.flatMap { Int($0) }
+        func matchesTitle(_ titles: [String], years: [Int]) -> Bool {
+            guard !title.isEmpty, titles.contains(where: { normalized($0) == title }) else { return false }
+            return year == nil || years.allSatisfy { $0 == year }
+        }
 
-    private func posterURL(_ path: String?) -> URL? {
-        guard let path, !path.isEmpty else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w342\(path)")
-    }
-
-    private func profileURL(_ path: String?) -> URL? {
-        guard let path, !path.isEmpty else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w185\(path)")
+        if credit.isTV {
+            let groups = store.seriesGroups
+            func metadata(_ group: SeriesGroup) -> [MediaMetadata] {
+                group.posterItem.flatMap { metaStore.cachedSeriesMetadata(for: $0) }.map { [$0] } ?? []
+            }
+            // IDs win over title fallbacks, including translated/localized titles.
+            if let group = groups.first(where: {
+                metadata($0).contains { $0.tmdbID == credit.tmdbID }
+            }) { return .series(group) }
+            return groups.first { group in
+                let meta = metadata(group)
+                guard meta.allSatisfy({ $0.tmdbID == nil }) else { return false }
+                let titles = [group.title] + group.items.compactMap(\.seriesTitle)
+                    + meta.flatMap { [$0.title, $0.originalTitle, $0.seriesTitle].compactMap { $0 } }
+                let releaseYears = meta
+                    .compactMap { $0.releaseDate.flatMap { Int($0.prefix(4)) } }
+                return matchesTitle(titles, years: releaseYears)
+            }.map { .series($0) }
+        } else {
+            let movies = store.movieItems
+            if let item = movies.first(where: {
+                metaStore.metadata(for: $0.id)?.tmdbID == credit.tmdbID
+            }) { return .movie(item) }
+            return movies.first { item in
+                let meta = metaStore.metadata(for: item.id)
+                guard meta?.tmdbID == nil else { return false }
+                let titles = [item.title] + [meta?.title, meta?.originalTitle].compactMap { $0 }
+                let releaseYear = meta?.releaseDate.flatMap { Int($0.prefix(4)) }
+                return matchesTitle(titles, years: [item.year, releaseYear].compactMap { $0 })
+            }.map { .movie($0) }
+        }
     }
 
     // MARK: 数据
@@ -180,7 +190,11 @@ struct PersonView: View {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard !Task.isCancelled else { return }
+            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+                throw SourceError.invalidResponse("无法读取演员作品")
+            }
             guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 errorText = "返回内容无法解析"
                 return
@@ -208,10 +222,12 @@ struct PersonView: View {
             // 有海报的排前面，再按年份倒序
             credits = list.sorted {
                 if ($0.posterPath != nil) != ($1.posterPath != nil) { return $0.posterPath != nil }
-                return ($0.year ?? "") > ($1.year ?? "")
+                if $0.year != $1.year { return ($0.year ?? "") > ($1.year ?? "") }
+                return $0.id < $1.id
             }
             AppLog.info("演员页 \(route.name)（\(route.id)）→ \(credits.count) 部")
         } catch {
+            guard !Task.isCancelled else { return }
             errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             AppLog.error("演员页失败：\(error.logDescription)")
         }
@@ -243,16 +259,19 @@ struct SeasonPosterView: View {
             }
         }
         .frame(width: width, height: width * 1.5)
-        .task(id: "\(seriesItem?.id ?? "-")#s\(season)") { await load() }
+        .task(id: "\(seriesItem?.id ?? "-")#s\(season)#r\(store.artworkRevision)") { await load() }
     }
 
     private func load() async {
+        image = nil
+        let revision = store.artworkRevision
         guard let item = seriesItem else { return }
 
         // 1) 本地 seasonNN-poster.jpg
         if let path = await LocalArtworkResolver.shared.seasonPosterPath(for: item, season: season, in: store),
            let data = try? await store.data(for: item, path: path),
            let img = PlatformImage(data: data) {
+            guard !Task.isCancelled, revision == store.artworkRevision else { return }
             image = img
             return
         }
@@ -260,6 +279,7 @@ struct SeasonPosterView: View {
         if let url = await MetadataStore.shared.seasonPosterURL(seriesItemID: item.id, season: season),
            let data = try? await URLSession.shared.data(from: url).0,
            let img = PlatformImage(data: data) {
+            guard !Task.isCancelled, revision == store.artworkRevision else { return }
             image = img
         }
     }

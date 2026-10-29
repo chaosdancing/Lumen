@@ -7,14 +7,12 @@ import Foundation
 enum MPV {
     static let formatFlag: Int32 = 3
     static let formatDouble: Int32 = 5
+    static let eventNone: Int32 = 0
+    static let eventEndFile: Int32 = 7
+    static let endFileReasonEOF: Int32 = 0
 }
 
-@_silgen_name("mpv_create")
-func mpv_create() -> OpaquePointer?
-
-@_silgen_name("mpv_initialize")
-func mpv_initialize(_ ctx: OpaquePointer) -> Int32
-
+/// Layout of libmpv's mpv_event and mpv_event_end_file from client.h.
 struct MPVEvent {
     var id: Int32
     var error: Int32
@@ -32,6 +30,12 @@ struct MPVEndFileEvent {
 
 @_silgen_name("mpv_wait_event")
 func mpv_wait_event(_ ctx: OpaquePointer, _ timeout: Double) -> UnsafePointer<MPVEvent>?
+
+@_silgen_name("mpv_create")
+func mpv_create() -> OpaquePointer?
+
+@_silgen_name("mpv_initialize")
+func mpv_initialize(_ ctx: OpaquePointer) -> Int32
 
 @_silgen_name("mpv_terminate_destroy")
 func mpv_terminate_destroy(_ ctx: OpaquePointer)

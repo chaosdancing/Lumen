@@ -11,6 +11,8 @@ struct CastMember: Codable, Hashable, Identifiable {
 }
 
 struct MediaMetadata: Codable {
+    var cacheVersion: Int?
+    var preferNFO: Bool?
     var itemID: String
     var tmdbID: Int?
     /// 剧名（TMDB 的 name / 电影标题）。用于把同一部剧的多个目录归并到一起。
@@ -20,12 +22,20 @@ struct MediaMetadata: Codable {
     var overview: String?
     var rating: Double?          // 0...10
     var voteCount: Int?
-    var certification: String?   // PG-13 / R / TV-14 …
     var genres: [String] = []
     var cast: [CastMember] = []
     var posterPath: String?      // TMDB 相对路径 或 本地图片路径
     var backdropPath: String?
     var releaseDate: String?
+    var certification: String?
+    var certificationRegion: String?
+    var mediaType: String?
+    var runtimeMinutes: Int?
+    var fieldSources: [String: String]?
+    var metadataLanguage: String?
+    var sourceFingerprint: String?
+    var artworkRefreshID: String?
+    var seriesCacheKey: String?
     var matchedName: String?
     var source: String = "tmdb"  // tmdb | nfo
     var updatedAt: Date = Date()
@@ -36,13 +46,54 @@ struct MediaMetadata: Codable {
 @MainActor
 final class MetadataStore: ObservableObject {
     static let shared = MetadataStore()
+    private static let cacheVersion = 3
 
     @Published private(set) var items: [String: MediaMetadata] = [:]
+    /// Published after item and series caches are consistent, so classifications see completed data.
+    @Published private(set) var revision: UInt64 = 0
     /// 剧集级缓存：同一部剧的多个 episode 只查一次 TMDB
     private var seriesCache: [String: MediaMetadata] = [:]
-    private var backdropTasks: [String: Task<URL?, Never>] = [:]
+    private struct SeriesRequest {
+        let id = UUID()
+        let task: Task<MediaMetadata?, Error>
+    }
+    private var seriesRequests: [String: SeriesRequest] = [:]
+    private var seriesMisses: Set<String> = []
+    private var remoteCache: [String: MediaMetadata] = [:]
+    private var diskLookups: [String: MediaMetadata] = [:]
+    private var diskMisses: Set<String> = []
+    private var fingerprints: [UUID: (config: MediaSourceConfig, value: String)] = [:]
     @Published private(set) var inFlight: Set<String> = []
     @Published var lastError: String?
+    @Published private(set) var loadState: [String: MetadataLoadState] = [:]
+    private var requests: [String: InFlightRequest] = [:]
+    private var interimItems: Set<String> = []
+    private let client: TMDBClient
+    private weak var sourceStore: AppStore?
+    private var diskSources: [UUID: MediaSourceConfig] = [:]
+
+    private struct RequestContext: Equatable {
+        let id: UUID
+        let preferNFO: Bool
+        let sourceConfig: MediaSourceConfig?
+        let artworkRevision: Int
+        let language: String
+        let force: Bool
+
+        func hasSameInputs(preferNFO: Bool, sourceConfig: MediaSourceConfig?,
+                           artworkRevision: Int) -> Bool {
+            self.preferNFO == preferNFO
+                && self.sourceConfig == sourceConfig
+                && self.artworkRevision == artworkRevision
+                && self.language == TMDBClient.language
+        }
+    }
+
+    private struct InFlightRequest {
+        let context: RequestContext
+        let task: Task<Void, Never>
+        var waiterCount: Int
+    }
 
     private var cacheDir: URL {
         let dir = StorePaths.root.appendingPathComponent("Metadata", isDirectory: true)
@@ -50,123 +101,459 @@ final class MetadataStore: ObservableObject {
         return dir
     }
 
-    init() { loadAllFromDisk() }
+    init(client: TMDBClient = .shared) {
+        self.client = client
+        if let data = try? Data(contentsOf: StorePaths.root.appendingPathComponent("sources.json")),
+           let configs = try? JSONDecoder().decode([MediaSourceConfig].self, from: data) {
+            for config in configs { diskSources[config.id] = config }
+        }
+        loadAllFromDisk()
+    }
 
     // MARK: 读取
 
-    func metadata(for itemID: String) -> MediaMetadata? { items[itemID] }
+    private func sourceConfig(for sourceID: UUID) -> MediaSourceConfig? {
+        if let sourceStore { return sourceStore.source(for: sourceID) }
+        return diskSources[sourceID]
+    }
+
+    private func fingerprint(_ config: MediaSourceConfig) -> String {
+        if let cached = fingerprints[config.id], cached.config == config { return cached.value }
+        let value = MetadataCache.sourceFingerprint(config)
+        fingerprints[config.id] = (config, value)
+        return value
+    }
+
+    private func cachedEnvelope(identity: String, config: MediaSourceConfig) -> MediaMetadata? {
+        if let cached = diskLookups[identity] { return cached }
+        if diskMisses.contains(identity) { return nil }
+        if let cached = MetadataCache.local(identity: identity, sourceConfig: config) {
+            diskLookups[identity] = cached
+            return cached
+        }
+        diskMisses.insert(identity)
+        return nil
+    }
+
+    func metadata(for itemID: String) -> MediaMetadata? {
+        guard let sourceID = UUID(uuidString: String(itemID.split(separator: "#").first ?? "")),
+              let config = sourceConfig(for: sourceID), let meta = items[itemID],
+              meta.sourceFingerprint == fingerprint(config) else { return nil }
+        return meta
+    }
+
+    func cachedSeriesMetadata(for item: MediaItem) -> MediaMetadata? {
+        guard let key = Self.seriesKey(for: item),
+              let config = sourceConfig(for: item.sourceID) else { return nil }
+        let fingerprint = fingerprint(config)
+        let identity = MetadataCache.mergedIdentity("series#\(key)", fingerprint: fingerprint)
+        guard let hit = seriesCache[key] ?? cachedEnvelope(identity: identity, config: config),
+              hit.sourceFingerprint == fingerprint,
+              hit.preferNFO == Preferences.shared.preferNFO else { return nil }
+        guard hit.metadataLanguage == TMDBClient.language else { return nil }
+        seriesCache[key] = hit
+        return hit
+    }
+
+    /// Read only: supplement cached library records with verified TMDB cache fields.
+    func libraryMetadata(for item: MediaItem, isSeries: Bool = false) -> MediaMetadata? {
+        let local = isSeries ? cachedSeriesMetadata(for: item) : metadata(for: item.id)
+        guard let config = sourceConfig(for: item.sourceID) else { return local }
+        let scope = fingerprint(config)
+        let prefix: String
+        if isSeries {
+            guard let key = Self.seriesKey(for: item) else { return local }
+            prefix = "tmdb-series#\(key)"
+        } else { prefix = "tmdb-item#\(item.id)" }
+        let identity = "\(prefix)#\(TMDBClient.language)#\(scope)"
+        let remote = remoteCache[identity] ?? cachedEnvelope(identity: identity, config: config)
+        return MetadataMerge.merge(preferred: local, fallback: remote, itemID: item.id)
+    }
+
+    func libraryMetadata(for group: SeriesGroup) -> MediaMetadata? {
+        let ordered = group.items.sorted {
+            ($0.season ?? 0, $0.episode ?? 0, $0.id) < ($1.season ?? 0, $1.episode ?? 0, $1.id)
+        }
+        var result: MediaMetadata?
+        var seen = Set<String>()
+        for item in ordered {
+            guard let key = Self.seriesKey(for: item), seen.insert(key).inserted else { continue }
+            guard let record = libraryMetadata(for: item, isSeries: true) else { continue }
+            // Use only show records, never infer show ratings/certification from episode scores.
+            result = MetadataMerge.merge(preferred: result, fallback: record,
+                                         itemID: group.posterItem?.id ?? item.id)
+        }
+        return result
+    }
+
+    func seriesMetadata(for item: MediaItem, in store: AppStore) async -> MediaMetadata? {
+        sourceStore = store
+        guard item.kind == .episode else { return nil }
+        if requests[item.id] == nil, !interimItems.contains(item.id),
+           let hit = cachedSeriesMetadata(for: item) { return hit }
+        await load(for: item, in: store)
+        return cachedSeriesMetadata(for: item)
+    }
+
+    func refresh(for item: MediaItem, in store: AppStore) async {
+        await load(for: item, in: store, force: true)
+    }
+
+    func invalidate(items list: [MediaItem]) {
+        diskLookups.removeAll()
+        diskMisses.removeAll()
+        for item in list {
+            requests[item.id]?.task.cancel()
+            requests[item.id] = nil
+            inFlight.remove(item.id)
+            var records = [items[item.id]].compactMap { $0 }
+            if let series = cachedSeriesMetadata(for: item) {
+                records.append(series)
+            }
+            for record in records {
+                for (field, path) in [("posterPath", record.posterPath), ("backdropPath", record.backdropPath)] {
+                    guard let path, !path.hasPrefix("http"),
+                          record.fieldSources?[field] == "nfo" || (record.fieldSources?[field] == nil && record.source == "nfo") else { continue }
+                    try? FileManager.default.removeItem(at: MetadataCache.imageURL(identity: MetadataCache.imageIdentity(path: path, sourceID: item.sourceID)))
+                }
+            }
+            items[item.id] = nil
+            interimItems.remove(item.id)
+            loadState[item.id] = nil
+            try? FileManager.default.removeItem(at: cacheDir.appendingPathComponent(Self.fileName(item.id)))
+            MetadataCache.invalidateMerged(identity: "item#\(item.id)")
+            if let key = Self.seriesKey(for: item) {
+                seriesCache[key] = nil
+                MetadataCache.invalidateMerged(identity: "series#\(key)")
+            }
+        }
+        for sourceID in Set(list.map(\.sourceID)) { MetadataCache.invalidateSourceImages(sourceID) }
+        revision &+= 1
+    }
+
+    func artworkMetadata(for item: MediaItem) -> MediaMetadata? {
+        cachedSeriesMetadata(for: item) ?? metadata(for: item.id)
+    }
+
+    func cachedPosterURL(for item: MediaItem) -> URL? {
+        let meta = artworkMetadata(for: item)
+        return imageURL(path: meta?.posterPath, itemID: item.id, size: "w500", metadata: meta)
+    }
+
+    func backdropURL(for item: MediaItem) -> URL? {
+        let meta = artworkMetadata(for: item)
+        return imageURL(path: meta?.backdropPath, itemID: item.id, size: "w1280", metadata: meta)
+    }
+
+    private func imageURL(path: String?, itemID: String, size: String,
+                          metadata supplied: MediaMetadata? = nil) -> URL? {
+        guard let path else { return nil }
+        let sourceID = UUID(uuidString: String(itemID.split(separator: "#").first ?? "")) ?? UUID()
+        let metadata = supplied ?? items[itemID]
+        let field = size == "w500" ? "posterPath" : "backdropPath"
+        let isLocal = metadata?.fieldSources?[field] == "nfo" || (metadata?.fieldSources?[field] == nil && metadata?.source == "nfo")
+        let remotePath = path.hasPrefix("http") || isLocal ? path : "https://image.tmdb.org/t/p/\(size)\(path.hasPrefix("/") ? "" : "/")\(path)"
+        let local = MetadataCache.imageURL(identity: MetadataCache.imageIdentity(path: remotePath, sourceID: sourceID))
+        if MetadataCache.validImage(at: local) { return local }
+        return isLocal && !path.hasPrefix("http") ? nil : URL(string: remotePath)
+    }
 
     func cachedPosterURL(for itemID: String) -> URL? {
-        guard let meta = items[itemID], let path = meta.posterPath else { return nil }
-        if path.hasPrefix("http") { return URL(string: path) }
-        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
-        guard TMDBClient.apiKey != nil else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w500\(path)")
+        let meta = artworkMetadata(for: itemID)
+        return imageURL(path: meta?.posterPath, itemID: itemID, size: "w500", metadata: meta)
     }
 
     func backdropURL(for itemID: String) -> URL? {
-        guard let meta = items[itemID], let path = meta.backdropPath else { return nil }
-        if path.hasPrefix("http") { return URL(string: path) }
-        guard TMDBClient.apiKey != nil else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w1280\(path)")
+        let meta = artworkMetadata(for: itemID)
+        return imageURL(path: meta?.backdropPath, itemID: itemID, size: "w1280", metadata: meta)
     }
 
-    /// 头图必须有横版素材；没有缓存时单独向 TMDB 核对片名并取剧照。
-    func bestBackdropURL(for item: MediaItem) async -> URL? {
-        if let cached = backdropURL(for: item.id) { return cached }
-        guard TMDBClient.apiKey != nil else { return nil }
-        if let task = backdropTasks[item.id] { return await task.value }
+    private func artworkMetadata(for itemID: String) -> MediaMetadata? {
+        guard let meta = metadata(for: itemID) else { return nil }
+        return cachedSeriesRecord(for: meta) ?? meta
+    }
 
-        let task = Task<URL?, Never> {
-            do {
-                let isSeries = item.seriesTitle != nil
-                let query = item.seriesTitle ?? item.title
-                guard let matched = try await TMDBClient.shared.scrape(
-                    itemID: item.id, query: query, year: item.year, isSeries: isSeries
-                ), matched.backdropPath != nil else { return nil }
-                var metadata = items[item.id] ?? matched
-                metadata.tmdbID = matched.tmdbID
-                metadata.backdropPath = matched.backdropPath
-                if metadata.posterPath == nil { metadata.posterPath = matched.posterPath }
-                items[item.id] = metadata
-                if let key = Self.seriesKey(for: item) { seriesCache[key] = matched }
-                saveToDisk(metadata)
-                return backdropURL(for: item.id)
-            } catch {
-                AppLog.error("TMDB 头图查询失败：\(error.logDescription)")
-                return nil
-            }
-        }
-        backdropTasks[item.id] = task
-        let url = await task.value
-        backdropTasks[item.id] = nil
-        return url
+    private func cachedSeriesRecord(for meta: MediaMetadata) -> MediaMetadata? {
+        guard let key = meta.seriesCacheKey, let fingerprint = meta.sourceFingerprint,
+              let sourceID = UUID(uuidString: String(meta.itemID.split(separator: "#").first ?? "")),
+              let config = sourceConfig(for: sourceID),
+              fingerprint == MetadataCache.sourceFingerprint(config) else { return nil }
+        let identity = MetadataCache.mergedIdentity("series#\(key)", fingerprint: fingerprint)
+        guard let series = seriesCache[key] ?? MetadataCache.local(identity: identity, sourceConfig: config),
+              series.sourceFingerprint == fingerprint,
+              series.preferNFO == Preferences.shared.preferNFO,
+              series.metadataLanguage == TMDBClient.language else { return nil }
+        return series
     }
 
     // MARK: 刮削
 
     /// 单个条目：优先本地 .nfo，其次 TMDB。已有缓存则跳过。
     func load(for item: MediaItem, in store: AppStore, force: Bool = false) async {
-        if !force, items[item.id] != nil { return }
-        if inFlight.contains(item.id) { return }
-        inFlight.insert(item.id)
-        defer { inFlight.remove(item.id) }
-
-        // 剧集：先看同剧是否已刮过，直接复用（省掉 74 集查 74 次）
-        if let seriesKey = Self.seriesKey(for: item),
-           let cached = seriesCache[seriesKey] {
-            var copy = cached
-            copy.itemID = item.id
-            items[item.id] = copy
-            saveToDisk(copy)
-            AppLog.info("  ← 复用剧集缓存「\(seriesKey)」→ \(copy.title ?? "-")")
+        sourceStore = store
+        let preferNFO = Preferences.shared.preferNFO
+        let sourceConfig = store.source(for: item.sourceID)
+        let artworkRevision = store.artworkRevision
+        if let current = requests[item.id] {
+            if !force, !current.task.isCancelled,
+               current.context.hasSameInputs(preferNFO: preferNFO,
+                                             sourceConfig: sourceConfig,
+                                             artworkRevision: artworkRevision) {
+                requests[item.id]?.waiterCount += 1
+                await waitForRequest(current.task, itemID: item.id,
+                                     requestID: current.context.id)
+                return
+            }
+            current.task.cancel()
+        }
+        if !force, requests[item.id] == nil, !interimItems.contains(item.id),
+           let cached = metadata(for: item.id),
+           cached.cacheVersion == Self.cacheVersion,
+           cached.preferNFO == preferNFO, cached.metadataLanguage == TMDBClient.language {
             return
         }
 
-        let preferNFO = Preferences.shared.preferNFO
-        let hasKey = TMDBClient.apiKey != nil
-        AppLog.info("刮削 \"\(item.title)\" preferNFO=\(preferNFO) hasKey=\(hasKey) dir=\((item.path as NSString).deletingLastPathComponent)")
-
-        // 1) 设置里勾了"优先使用NFO"就先读本地
-        if preferNFO {
-            if let nfo = await NFOParser.metadata(for: item, in: store) {
-                items[item.id] = nfo
-                saveToDisk(nfo)
-                AppLog.info("  ← NFO 命中：title=\(nfo.title ?? "-") rating=\(nfo.rating.map { String($0) } ?? "-")")
-                return
-            }
-            AppLog.info("  ← NFO 未找到")
+        let context = RequestContext(id: UUID(), preferNFO: preferNFO,
+                                     sourceConfig: sourceConfig,
+                                     artworkRevision: artworkRevision, language: TMDBClient.language, force: force)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performLoad(for: item, in: store, force: force, context: context)
         }
+        requests[item.id] = InFlightRequest(context: context, task: task, waiterCount: 1)
+        inFlight.insert(item.id)
+        loadState[item.id] = MetadataLoadState(isLoading: true, text: "正在读取本地元数据")
+        await waitForRequest(task, itemID: item.id, requestID: context.id)
+    }
 
-        // 2) TMDB
-        if hasKey {
+    private func waitForRequest(_ task: Task<Void, Never>, itemID: String,
+                                requestID: UUID) async {
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelWaiter(itemID: itemID, requestID: requestID)
+            }
+        }
+    }
+
+    private func cancelWaiter(itemID: String, requestID: UUID) {
+        guard var current = requests[itemID],
+              current.context.id == requestID else { return }
+        current.waiterCount -= 1
+        requests[itemID] = current
+        if current.waiterCount == 0 {
+            current.task.cancel()
+        }
+    }
+
+    private func performLoad(for item: MediaItem, in store: AppStore, force: Bool,
+                             context: RequestContext) async {
+        defer { finishRequest(itemID: item.id, requestID: context.id) }
+        guard isCurrent(context, for: item, in: store) else { return }
+
+        var local = await NFOParser.metadata(for: item, in: store)
+        let seriesKey = Self.seriesKey(for: item)
+        guard isCurrent(context, for: item, in: store),
+              let config = context.sourceConfig, let source = try? MediaSourceFactory.make(config) else { return }
+        let scope = MetadataCache.sourceFingerprint(config)
+        let itemIdentity = MetadataCache.mergedIdentity("item#\(item.id)", fingerprint: scope)
+        let seriesIdentity = seriesKey.map { MetadataCache.mergedIdentity("series#\($0)", fingerprint: scope) }
+        if force {
+            invalidateLocalImages([metadata(for: item.id), cachedSeriesMetadata(for: item), local].compactMap { $0 },
+                                  sourceID: item.sourceID)
+        }
+        func publishLocal(_ local: MediaMetadata?, series: MediaMetadata?) {
+            guard isCurrent(context, for: item, in: store) else { return }
+            var series = series
+            if var record = series, let key = seriesKey {
+                stamp(&record, context: context)
+                seriesCache[key] = record
+                series = record
+            }
+            let record = seriesKey == nil ? local : MetadataMerge.episode(local: local, series: series, item: item)
+            if var value = record {
+                value.seriesCacheKey = seriesKey
+                stamp(&value, context: context)
+                interimItems.insert(item.id)
+                commit(value, context: context, item: item, store: store)
+            }
+        }
+        // Publish each local scope before reading the next scope or awaiting supplementation.
+        publishLocal(local, series: nil)
+        var localSeries = seriesKey == nil ? nil : await NFOParser.seriesMetadata(for: item, in: store)
+        guard isCurrent(context, for: item, in: store) else { return }
+        if force, let localSeries { invalidateLocalImages([localSeries], sourceID: item.sourceID) }
+        publishLocal(local, series: localSeries)
+        if local == nil, TMDBClient.apiKey == nil {
+            local = await MetadataCache.restore(identity: itemIdentity, source: source) {
+                self.isCurrent(context, for: item, in: store)
+            }
+            publishLocal(local, series: localSeries)
+        }
+        if localSeries == nil, TMDBClient.apiKey == nil, let seriesIdentity {
+            localSeries = await MetadataCache.restore(identity: seriesIdentity, source: source) {
+                self.isCurrent(context, for: item, in: store)
+            }
+            publishLocal(local, series: localSeries)
+        }
+        let identity = (seriesKey.map { "tmdb-series#\($0)#\(context.language)" } ?? "tmdb-item#\(item.id)#\(context.language)") + "#\(scope)"
+        var remote = remoteCache[identity]
+        if remote == nil {
+            remote = await MetadataCache.restore(identity: identity, source: source) {
+                self.isCurrent(context, for: item, in: store)
+            }
+        }
+        guard isCurrent(context, for: item, in: store) else { return }
+        if let remote { remoteCache[identity] = remote }
+        if TMDBClient.apiKey != nil && (force || remote == nil) {
+            loadState[item.id]?.text = "正在通过 TMDB 补充元数据"
             do {
-                let isSeries = item.seriesTitle != nil
-                let query = isSeries ? (item.seriesTitle ?? item.title) : item.title
-                if let meta = try await TMDBClient.shared.scrape(itemID: item.id,
-                                                                query: query,
-                                                                year: item.year,
-                                                                isSeries: isSeries) {
-                    items[item.id] = meta
-                    saveToDisk(meta)
-                    if let key = Self.seriesKey(for: item) { seriesCache[key] = meta }
-                    AppLog.info("  ← TMDB 命中：\(meta.title ?? "-")")
-                    return
+                let query = item.seriesTitle ?? local?.title ?? item.title
+                if let key = seriesKey {
+                    let requestKey = "\(key)#\(scope)#\(context.artworkRevision)#\(context.language)"
+                    let request: SeriesRequest
+                    if !force, seriesMisses.contains(requestKey) {
+                        request = SeriesRequest(task: Task { nil })
+                    } else if !force, let existing = seriesRequests[requestKey] { request = existing }
+                    else {
+                        let client = self.client
+                        request = SeriesRequest(task: Task { try await client.scrape(itemID: item.id, query: query,
+                                                                                    year: item.year, isSeries: true) })
+                        seriesRequests[requestKey] = request
+                    }
+                    defer {
+                        if seriesRequests[requestKey]?.id == request.id { seriesRequests[requestKey] = nil }
+                    }
+                    let scraped = try await request.task.value
+                    guard isCurrent(context, for: item, in: store) else { return }
+                    if let scraped { remote = scraped; seriesMisses.remove(requestKey) }
+                    else { seriesMisses.insert(requestKey) }
+                } else {
+                    if let scraped = try await client.scrape(itemID: item.id, query: query,
+                                                            year: item.year, isSeries: false) { remote = scraped }
                 }
-                AppLog.info("  ← TMDB 无结果：\(query)")
+                guard isCurrent(context, for: item, in: store) else { return }
+                if let remote {
+                    remoteCache[identity] = remote
+                }
             } catch {
-                lastError = error.localizedDescription
-                AppLog.error("  ← TMDB 失败：\(error.logDescription)")
+                guard isCurrent(context, for: item, in: store) else { return }
+                lastError = "TMDB 元数据请求失败，已保留可用的本地信息。"
+                loadState[item.id]?.error = lastError
             }
         }
+        guard isCurrent(context, for: item, in: store) else { return }
+        // Refresh is explicitly local-first, even when the normal preference is TMDB-first.
+        let localWins = force || context.preferNFO
+        func merged(_ nfo: MediaMetadata?) -> MediaMetadata? {
+            MetadataMerge.merge(preferred: localWins ? nfo : remote,
+                                fallback: localWins ? remote : nfo, itemID: item.id)
+        }
+        var result: MediaMetadata?
+        var finalSeries: MediaMetadata?
+        if let key = seriesKey {
+            if var series = merged(localSeries) {
+                series.mediaType = "tv"
+                stamp(&series, context: context)
+                seriesCache[key] = series
+                finalSeries = series
+                result = MetadataMerge.episode(local: local, series: series, item: item)
+            } else { result = MetadataMerge.episode(local: local, series: nil, item: item) }
+        } else { result = merged(local) }
+        guard isCurrent(context, for: item, in: store) else { return }
+        if var result {
+            result.seriesCacheKey = seriesKey
+            stamp(&result, context: context)
+            guard commit(result, context: context, item: item, store: store) else { return }
+            interimItems.remove(item.id)
+            loadState[item.id]?.text = "元数据已更新"
+            // Observable item/series publication precedes all disk, NAS and image persistence.
+            saveToDisk(result)
+            await persist(result, identity: itemIdentity, source: source,
+                          item: item, context: context, store: store)
+            if let finalSeries, let seriesIdentity {
+                await persist(finalSeries, identity: seriesIdentity, source: source,
+                              item: item, context: context, store: store)
+            }
+            if let remote {
+                await persist(remote, identity: identity, source: source,
+                              item: item, context: context, store: store)
+            }
+            let publishedItem = result
+            let publishedSeries = finalSeries
+            async let itemImages: Void = persistImages(publishedItem, source: source, item: item, context: context, store: store, force: force)
+            async let seriesImages: Void = persistImages(publishedSeries, source: source, item: item, context: context, store: store, force: force)
+            _ = await (itemImages, seriesImages)
+        } else { loadState[item.id]?.text = "未找到元数据" }
+    }
 
-        // 3) 兜底：本地 NFO
-        if let nfo = await NFOParser.metadata(for: item, in: store) {
-            items[item.id] = nfo
-            saveToDisk(nfo)
-            AppLog.info("  ← 兜底 NFO 命中：\(nfo.title ?? "-")")
-        } else {
-            AppLog.info("  ← 无元数据（既没有 nfo 也没刮到）")
+    private func persist(_ meta: MediaMetadata, identity: String, source: MediaSource,
+                         item: MediaItem, context: RequestContext, store: AppStore) async {
+        guard isCurrent(context, for: item, in: store) else { return }
+        do {
+            try await MetadataCache.save(meta, identity: identity, source: source) {
+                self.isCurrent(context, for: item, in: store)
+            }
+        }
+        catch {
+            guard isCurrent(context, for: item, in: store) else { return }
+            loadState[item.id]?.error = "元数据已缓存在本机，但写入媒体源缓存失败。"
+        }
+    }
+
+    private func invalidateLocalImages(_ records: [MediaMetadata], sourceID: UUID) {
+        for record in records {
+            var paths: [String] = []
+            for (field, path) in [("posterPath", record.posterPath), ("backdropPath", record.backdropPath)] {
+                if let path, record.fieldSources?[field] == "nfo"
+                    || (record.fieldSources?[field] == nil && record.source == "nfo") { paths.append(path) }
+            }
+            if record.fieldSources?["cast"] == "nfo" || (record.fieldSources?["cast"] == nil && record.source == "nfo") {
+                paths += record.cast.compactMap(\.profilePath)
+            }
+            for path in paths where !path.hasPrefix("http") {
+                try? FileManager.default.removeItem(at: MetadataCache.imageURL(
+                    identity: MetadataCache.imageIdentity(path: path, sourceID: sourceID)))
+            }
+        }
+    }
+
+    private func persistImages(_ meta: MediaMetadata?, source: MediaSource, item: MediaItem,
+                               context: RequestContext, store: AppStore, force: Bool) async {
+        guard let meta, isCurrent(context, for: item, in: store) else { return }
+        var paths: Set<String> = []
+        for (field, path, size) in [("posterPath", meta.posterPath, "w500"), ("backdropPath", meta.backdropPath, "w1280")] {
+            guard let path else { continue }
+            let local = meta.fieldSources?[field] == "nfo" || (meta.fieldSources?[field] == nil && meta.source == "nfo")
+            let resolved = local || path.hasPrefix("http") ? path : "https://image.tmdb.org/t/p/\(size)\(path.hasPrefix("/") ? "" : "/")\(path)"
+            paths.insert(resolved)
+        }
+        let localCast = meta.fieldSources?["cast"] == "nfo" || (meta.fieldSources?["cast"] == nil && meta.source == "nfo")
+        for member in meta.cast {
+            guard let path = member.profilePath, !path.isEmpty else { continue }
+            paths.insert(localCast || path.hasPrefix("http") ? path : "https://image.tmdb.org/t/p/w185\(path.hasPrefix("/") ? "" : "/")\(path)")
+        }
+        // Bounded parallel prefetch: a slow poster cannot hold up backdrop/profile downloads.
+        await withTaskGroup(of: Bool.self) { group in
+            var iterator = paths.makeIterator()
+            func enqueue(_ path: String) {
+                group.addTask {
+                    do {
+                        try await MetadataImageCache.shared.persist(path: path, source: source,
+                            force: force && !path.hasPrefix("http")) {
+                            self.isCurrent(context, for: item, in: store)
+                        }
+                        return true
+                    } catch { return false }
+                }
+            }
+            for _ in 0..<4 { if let path = iterator.next() { enqueue(path) } }
+            for await success in group {
+                guard isCurrent(context, for: item, in: store) else { group.cancelAll(); return }
+                if !success { loadState[item.id]?.error = "图片已尽量缓存在本机，但写入媒体源缓存失败。" }
+                if let path = iterator.next() { enqueue(path) }
+            }
         }
     }
 
@@ -174,76 +561,36 @@ final class MetadataStore: ObservableObject {
     private static func seriesKey(for item: MediaItem) -> String? {
         guard let series = item.seriesTitle else { return nil }
         let cleaned = TMDBClient.searchableTitle(series).lowercased()
-        return cleaned.isEmpty ? nil : cleaned
+        guard !cleaned.isEmpty else { return nil }
+        return "\(item.sourceID.uuidString.lowercased())#\(cleaned)#\(item.year.map(String.init) ?? "-")"
     }
 
     /// 批量刮削（扫描完成后调用）
     func scrapeAll(items list: [MediaItem], in store: AppStore, limit: Int = 40) async {
-        guard TMDBClient.apiKey != nil else { return }
-        let pending = list.filter { items[$0.id] == nil }
+        sourceStore = store
+        let preferNFO = Preferences.shared.preferNFO
+        let pending = list.filter { item in
+            guard let cached = metadata(for: item.id) else { return true }
+            return requests[item.id] != nil || interimItems.contains(item.id) || cached.cacheVersion != Self.cacheVersion
+                || cached.preferNFO != preferNFO || cached.metadataLanguage != TMDBClient.language
+        }
         for item in pending.prefix(limit) {
             await load(for: item, in: store)
             try? await Task.sleep(nanoseconds: 260_000_000)   // 限速，TMDB 40 req/s
         }
     }
 
-    /// 为“分级”页补齐既有缓存。剧集共用同一个 TMDB id，只请求一次。
-    func fillMissingCertifications(items list: [MediaItem], limit: Int = 40) async {
-        guard TMDBClient.apiKey != nil else { return }
-        var fetched: [Int: String] = [:]
-        var noResult: Set<Int> = []
-        var requests = 0
-
-        for item in list {
-            if items[item.id]?.certification?.isEmpty == false { continue }
-            if requests >= limit { break }
-
-            if var metadata = items[item.id], let tmdbID = metadata.tmdbID {
-                if let cached = fetched[tmdbID] {
-                    metadata.certification = cached
-                    items[item.id] = metadata
-                    saveToDisk(metadata)
-                    continue
-                }
-                if noResult.contains(tmdbID) { continue }
-                requests += 1
-                do {
-                    if let value = try await TMDBClient.shared.certification(
-                        tmdbID: tmdbID, isSeries: item.seriesTitle != nil
-                    ) {
-                        fetched[tmdbID] = value
-                        metadata.certification = value
-                        items[item.id] = metadata
-                        saveToDisk(metadata)
-                    } else {
-                        noResult.insert(tmdbID)
-                    }
-                } catch {
-                    AppLog.error("TMDB 分级查询失败：\(error.logDescription)")
-                }
-            } else {
-                requests += 1
-                do {
-                    let query = item.seriesTitle ?? item.title
-                    if let scraped = try await TMDBClient.shared.scrape(
-                        itemID: item.id, query: query, year: item.year,
-                        isSeries: item.seriesTitle != nil
-                    ) {
-                        items[item.id] = scraped
-                        saveToDisk(scraped)
-                    }
-                } catch {
-                    AppLog.error("TMDB 分级补全失败：\(error.logDescription)")
-                }
-            }
-            try? await Task.sleep(nanoseconds: 120_000_000)
-        }
-    }
-
     /// 季海报（本地没有时用 TMDB 的季海报）
     func seasonPosterURL(seriesItemID: String, season: Int) async -> URL? {
-        guard let meta = items[seriesItemID], let tvID = meta.tmdbID,
-              let key = TMDBClient.apiKey else { return nil }
+        guard let meta = metadata(for: seriesItemID) else { return nil }
+        let series = cachedSeriesRecord(for: meta)
+        guard let tvID = series?.tmdbID ?? meta.tmdbID else { return nil }
+        let identity = "season#\(tvID)#\(season)"
+        if let cached = MetadataCache.local(identity: identity), let path = cached.posterPath,
+           let url = imageURL(path: path, itemID: seriesItemID, size: "w500", metadata: cached) {
+            return url
+        }
+        guard let key = TMDBClient.apiKey else { return nil }
         var comps = URLComponents(string: "https://api.themoviedb.org/3/tv/\(tvID)/season/\(season)")!
         var items: [URLQueryItem] = [.init(name: "language", value: TMDBClient.language)]
         if !TMDBClient.isReadAccessToken(key) { items.append(.init(name: "api_key", value: key)) }
@@ -253,10 +600,49 @@ final class MetadataStore: ObservableObject {
         if TMDBClient.isReadAccessToken(key) {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
-        guard let (data, _) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let path = root["poster_path"] as? String else { return nil }
-        return URL(string: "https://image.tmdb.org/t/p/w500\(path)")
+        guard !Task.isCancelled else { return nil }
+        var record = MediaMetadata(itemID: identity)
+        record.posterPath = path
+        try? await MetadataCache.save(record, identity: identity, source: nil)
+        let posterURL = URL(string: "https://image.tmdb.org/t/p/w500\(path)")
+        if let posterURL, let (bytes, response) = try? await URLSession.shared.data(from: posterURL),
+           let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+           MetadataCache.validImage(bytes), !Task.isCancelled {
+            try? bytes.write(to: MetadataCache.imageURL(identity: posterURL.absoluteString), options: .atomic)
+        }
+        return imageURL(path: path, itemID: seriesItemID, size: "w500", metadata: record)
+    }
+
+    private func isCurrent(_ context: RequestContext, for item: MediaItem,
+                           in store: AppStore) -> Bool {
+        !Task.isCancelled
+            && requests[item.id]?.context == context
+            && Preferences.shared.preferNFO == context.preferNFO
+            && store.source(for: item.sourceID) == context.sourceConfig
+            && store.artworkRevision == context.artworkRevision
+            && TMDBClient.language == context.language
+    }
+
+    @discardableResult
+    private func commit(_ meta: MediaMetadata, seriesKey: String? = nil,
+                        context: RequestContext, item: MediaItem, store: AppStore) -> Bool {
+        guard isCurrent(context, for: item, in: store) else { return false }
+        items[item.id] = meta
+        if let seriesKey { seriesCache[seriesKey] = meta }
+        revision &+= 1
+        return true
+    }
+
+    private func finishRequest(itemID: String, requestID: UUID) {
+        guard requests[itemID]?.context.id == requestID else { return }
+        requests[itemID] = nil
+        inFlight.remove(itemID)
+        loadState[itemID]?.isLoading = false
+        if Task.isCancelled { loadState[itemID]?.text = "已取消" }
     }
 
     // MARK: 磁盘
@@ -274,10 +660,25 @@ final class MetadataStore: ObservableObject {
         let decoder = JSONDecoder()
         for file in files where file.pathExtension == "json" {
             if let data = try? Data(contentsOf: file),
-               let meta = try? decoder.decode(MediaMetadata.self, from: data) {
+               let meta = try? decoder.decode(MediaMetadata.self, from: data),
+               meta.cacheVersion == Self.cacheVersion,
+               meta.preferNFO == Preferences.shared.preferNFO,
+               meta.metadataLanguage == TMDBClient.language,
+               let sourceID = UUID(uuidString: String(meta.itemID.split(separator: "#").first ?? "")),
+               let config = sourceConfig(for: sourceID),
+               meta.sourceFingerprint == MetadataCache.sourceFingerprint(config) {
                 items[meta.itemID] = meta
             }
         }
+    }
+
+    private func stamp(_ meta: inout MediaMetadata, context: RequestContext) {
+        meta.cacheVersion = Self.cacheVersion
+        meta.preferNFO = context.preferNFO
+        meta.metadataLanguage = context.language
+        meta.sourceFingerprint = context.sourceConfig.map(MetadataCache.sourceFingerprint)
+        // Forced refresh changes same-path artwork identity without a library-wide revision.
+        if context.force { meta.artworkRefreshID = context.id.uuidString }
     }
 
     private static func fileName(_ id: String) -> String {
@@ -295,87 +696,60 @@ enum NFOParser {
               let source = try? MediaSourceFactory.make(config) else { return nil }
         let dir = (item.path as NSString).deletingLastPathComponent
         let stem = ((item.path as NSString).lastPathComponent as NSString).deletingPathExtension
-        guard let entries = try? await source.list(path: dir) else {
-            AppLog.error("NFO: 列目录失败 \(dir)")
-            return nil
-        }
-        let names = Set(entries.filter { !$0.isDirectory }.map { $0.name.lowercased() })
-
-        // 单集 .nfo 或整剧 tvshow.nfo
-        let candidates = ["\(stem).nfo", "movie.nfo", "tvshow.nfo"]
-        guard let nfoName = candidates.first(where: { names.contains($0.lowercased()) }) else {
-            let nfos = names.filter { $0.hasSuffix(".nfo") }
-            AppLog.info("NFO: \(dir) 里没找到 \(candidates)，该目录 nfo=\(nfos.isEmpty ? "无" : nfos.joined(separator: ","))")
-            return nil
-        }
-        let path = dir.isEmpty ? nfoName : "\(dir)/\(nfoName)"
-        guard let data = try? await source.data(for: path) else { return nil }
-        let text = SubtitleParser.decodeText(data)
-
-        func tag(_ name: String) -> String? {
-            guard let start = text.range(of: "<\(name)>") else { return nil }
-            // 闭合标签必须从起始标签之后开始找，否则区间非法会直接崩
-            guard let end = text.range(of: "</\(name)>", range: start.upperBound..<text.endIndex),
-                  start.upperBound <= end.lowerBound else { return nil }
-            let value = text[start.upperBound..<end.lowerBound]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return value.isEmpty ? nil : value
-        }
-
-        var meta = MediaMetadata(itemID: item.id)
-        meta.source = "nfo"
-        meta.title = tag("title")
-        meta.originalTitle = tag("originaltitle")
-        meta.overview = tag("plot") ?? tag("outline")
-        meta.releaseDate = tag("year") ?? tag("premiered")
-        if let r = tag("rating"), let v = Double(r) { meta.rating = v }
-        meta.certification = tag("mpaa") ?? tag("certification") ?? tag("contentrating")
-        meta.genres = matches(text, tag: "genre")
-
-        // <actor><name>..</name><role>..</role></actor>
-        var cast: [CastMember] = []
-        var rest = Substring(text)
-        while let s = rest.range(of: "<actor>"),
-              let e = rest.range(of: "</actor>", range: s.upperBound..<rest.endIndex),
-              s.upperBound <= e.lowerBound {
-            let block = rest[s.upperBound..<e.lowerBound]
-            let name = block.range(of: "<name>").flatMap { ns in
-                block.range(of: "</name>", range: ns.upperBound..<block.endIndex).map {
-                    String(block[ns.upperBound..<$0.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-            }
-            let role = block.range(of: "<role>").flatMap { rs in
-                block.range(of: "</role>", range: rs.upperBound..<block.endIndex).map {
-                    String(block[rs.upperBound..<$0.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-            }
-            if let name, !name.isEmpty {
-                cast.append(CastMember(name: name, role: role ?? "", profilePath: nil))
-            }
-            rest = rest[e.upperBound...]
-        }
-        meta.cast = Array(cast.prefix(20))
-
-        // 本地图片：<thumb>poster.jpg</thumb> 或同目录 poster.jpg
-        if let thumb = tag("thumb"), names.contains(thumb.lowercased()) {
-            meta.posterPath = dir.isEmpty ? thumb : "\(dir)/\(thumb)"
-        } else if names.contains("poster.jpg") {
-            meta.posterPath = dir.isEmpty ? "poster.jpg" : "\(dir)/poster.jpg"
-        }
-        return meta
+        return await read(candidates: item.kind == .episode ? ["\(stem).nfo"] : ["\(stem).nfo", "movie.nfo"],
+                          dir: dir, itemID: item.id, source: source)
     }
 
-    private static func matches(_ text: String, tag: String) -> [String] {
-        var out: [String] = []
-        var rest = Substring(text)
-        while let s = rest.range(of: "<\(tag)>"),
-              let e = rest.range(of: "</\(tag)>", range: s.upperBound..<rest.endIndex),
-              s.upperBound <= e.lowerBound {
-            let v = String(rest[s.upperBound..<e.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !v.isEmpty { out.append(v) }
-            rest = rest[e.upperBound...]
+    @MainActor
+    static func seriesMetadata(for item: MediaItem, in store: AppStore) async -> MediaMetadata? {
+        guard item.kind == .episode, let config = store.source(for: item.sourceID),
+              let source = try? MediaSourceFactory.make(config) else { return nil }
+        var dir = (item.path as NSString).deletingLastPathComponent
+        // Season directory plus at most two ancestors; never escape the source root.
+        for _ in 0..<3 {
+            guard !Task.isCancelled else { return nil }
+            if let result = await read(candidates: ["tvshow.nfo"], dir: dir,
+                                       itemID: item.id, source: source) { return result }
+            if dir.isEmpty { break }
+            dir = (dir as NSString).deletingLastPathComponent
         }
-        return out
+        return nil
+    }
+
+    private static func read(candidates: [String], dir: String, itemID: String,
+                             source: MediaSource) async -> MediaMetadata? {
+        guard !Task.isCancelled, let entries = try? await source.list(path: dir) else { return nil }
+        let files = entries.filter { !$0.isDirectory }
+        for candidate in candidates {
+            guard !Task.isCancelled else { return nil }
+            guard let entry = files.first(where: { $0.name.lowercased() == candidate.lowercased() }),
+                  let data = try? await source.data(for: entry.path),
+                  var meta = NFXMLDecoder.decode(data, itemID: itemID) else { continue }
+            func image(_ value: String?, variant: ArtworkVariant) -> String? {
+                if let value, value.hasPrefix("https://") || value.hasPrefix("http://") { return value }
+                if let value, let match = files.first(where: {
+                    $0.name.lowercased() == (value as NSString).lastPathComponent.lowercased()
+                }) { return match.path }
+                let stem = (entry.name as NSString).deletingPathExtension
+                guard let name = ArtworkMatcher.match(names: files.map(\.name), stem: stem,
+                                                       variant: variant),
+                      let match = files.first(where: { $0.name == name }) else { return nil }
+                return match.path
+            }
+            meta.posterPath = image(meta.posterPath, variant: .poster)
+            meta.backdropPath = image(meta.backdropPath, variant: .backdrop)
+            for index in meta.cast.indices {
+                guard let path = meta.cast[index].profilePath, !path.hasPrefix("http") else { continue }
+                // Preserve source-relative actor paths, resolving same-directory names from the listing.
+                if let match = files.first(where: { $0.name.caseInsensitiveCompare(path) == .orderedSame }) {
+                    meta.cast[index].profilePath = match.path
+                } else if !dir.isEmpty, !path.hasPrefix(dir + "/"), !path.hasPrefix("/") {
+                    meta.cast[index].profilePath = "\(dir)/\(path)"
+                }
+            }
+            return Task.isCancelled ? nil : meta
+        }
+        return nil
     }
 }
 
@@ -439,11 +813,15 @@ final class TMDBClient {
         UserDefaults.standard.set(lang, forKey: languageKey)
     }
 
-    private let session: URLSession = {
-        let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 20
-        return URLSession(configuration: cfg)
-    }()
+    private let session: URLSession
+    init(session: URLSession? = nil) {
+        if let session { self.session = session }
+        else {
+            let cfg = URLSessionConfiguration.default
+            cfg.timeoutIntervalForRequest = 20
+            self.session = URLSession(configuration: cfg)
+        }
+    }
 
     // MARK: 刮削
 
@@ -510,12 +888,33 @@ final class TMDBClient {
         var meta = MediaMetadata(itemID: itemID)
         meta.tmdbID = d["id"] as? Int
         meta.title = d["title"] as? String ?? d["name"] as? String
-        meta.seriesTitle = d["name"] as? String ?? d["title"] as? String
+        meta.seriesTitle = isSeries ? (d["name"] as? String) : nil
+        meta.mediaType = isSeries ? "tv" : "movie"
         meta.originalTitle = d["original_title"] as? String ?? d["original_name"] as? String
         meta.overview = d["overview"] as? String
-        meta.rating = (d["vote_average"] as? Double).map { ($0 * 10).rounded() / 10 }
         meta.voteCount = d["vote_count"] as? Int
-        meta.certification = Self.extractCertification(from: d, isSeries: isSeries)
+        if (meta.voteCount ?? 0) > 0, let value = d["vote_average"] as? Double,
+           (0...10).contains(value) { meta.rating = value }
+        meta.runtimeMinutes = d["runtime"] as? Int ?? (d["episode_run_time"] as? [Int])?.first
+        let ratingRoot = d[isSeries ? "content_ratings" : "release_dates"] as? [String: Any]
+        let countries = ratingRoot?["results"] as? [[String: Any]] ?? []
+        var certificates: [(country: String, rating: String)] = []
+        for country in countries {
+            guard let code = country["iso_3166_1"] as? String else { continue }
+            let values = isSeries ? [country] : (country["release_dates"] as? [[String: Any]] ?? [])
+            for value in values {
+                if let rating = value[isSeries ? "rating" : "certification"] as? String,
+                   !rating.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    certificates.append((code, rating))
+                }
+            }
+        }
+        let preferredRegion = Self.language.split(separator: "-").last.map(String.init)?.uppercased()
+        if let certificate = certificates.first(where: { $0.country == preferredRegion })
+            ?? certificates.first(where: { $0.country == "US" }) ?? certificates.first {
+            meta.certification = certificate.rating
+            meta.certificationRegion = certificate.country
+        }
         meta.posterPath = d["poster_path"] as? String
         meta.backdropPath = d["backdrop_path"] as? String
         meta.releaseDate = d["release_date"] as? String ?? d["first_air_date"] as? String
@@ -535,54 +934,6 @@ final class TMDBClient {
             }
         }
         return meta
-    }
-
-    func certification(tmdbID: Int, isSeries: Bool) async throws -> String? {
-        guard let key = Self.apiKey else { throw TMDBError.noKey }
-        let usesBearer = Self.isReadAccessToken(key)
-        let suffix = isSeries ? "content_ratings" : "release_dates"
-        var comps = URLComponents(string: "https://api.themoviedb.org/3/\(isSeries ? "tv" : "movie")/\(tmdbID)/\(suffix)")!
-        var query: [URLQueryItem] = []
-        if !usesBearer { query.append(.init(name: "api_key", value: key)) }
-        comps.queryItems = query
-        let data = try await get(comps.url!, bearer: usesBearer ? key : nil)
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw TMDBError.decode
-        }
-        let wrapped: [String: Any] = isSeries
-            ? ["content_ratings": root]
-            : ["release_dates": root]
-        return Self.extractCertification(from: wrapped, isSeries: isSeries)
-    }
-
-    private static func extractCertification(from detail: [String: Any], isSeries: Bool) -> String? {
-        let preferredRegions = [Locale.current.region?.identifier, "CN", "US"]
-            .compactMap { $0 }
-        if isSeries,
-           let root = detail["content_ratings"] as? [String: Any],
-           let results = root["results"] as? [[String: Any]] {
-            for region in preferredRegions {
-                if let value = results.first(where: { ($0["iso_3166_1"] as? String) == region })?["rating"] as? String,
-                   !value.isEmpty { return value }
-            }
-            return results.compactMap { $0["rating"] as? String }.first { !$0.isEmpty }
-        }
-        if !isSeries,
-           let root = detail["release_dates"] as? [String: Any],
-           let results = root["results"] as? [[String: Any]] {
-            func value(in group: [String: Any]) -> String? {
-                guard let dates = group["release_dates"] as? [[String: Any]] else { return nil }
-                let preferred = dates.first { ($0["type"] as? Int) == 3 && (($0["certification"] as? String)?.isEmpty == false) }
-                    ?? dates.first { ($0["certification"] as? String)?.isEmpty == false }
-                return preferred?["certification"] as? String
-            }
-            for region in preferredRegions {
-                if let group = results.first(where: { ($0["iso_3166_1"] as? String) == region }),
-                   let rating = value(in: group) { return rating }
-            }
-            return results.compactMap(value).first
-        }
-        return nil
     }
 
     private func get(_ url: URL, bearer: String? = nil) async throws -> Data {
