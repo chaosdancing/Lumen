@@ -388,15 +388,15 @@ struct BrowseView: View {
             if onSearch != nil || (destination != .home && destination != .search) {
                 ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 8) {
+                        if let onSearch {
+                            SearchToolbarButton(action: onSearch, identifier: searchIdentifier)
+                        }
                         if destination != .home && destination != .search {
                             if DeviceInfo.isPad {
                                 optionsMenu
                             } else {
                                 sortControls
                             }
-                        }
-                        if let onSearch {
-                            SearchToolbarButton(action: onSearch, identifier: searchIdentifier)
                         }
                     }
                     .buttonStyle(.plain)
@@ -465,14 +465,15 @@ struct BrowseView: View {
                       systemImage: listMode ? "square.grid.2x2" : "list.bullet")
             }
         } label: {
-            Image(systemName: "line.3.horizontal.decrease")
-                .font(.system(size: 15, weight: .semibold))
+            Image(systemName: "ellipsis")
+                .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(.primary)
-                .frame(width: 34, height: 34)
+                .frame(width: 38, height: 38)
                 .background(.regularMaterial, in: Circle())
                 .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
                 .contentShape(Circle())
         }
+        .tint(Color.primary)
         .accessibilityLabel("筛选与排序")
         .accessibilityIdentifier("browse.options")
     }
@@ -641,9 +642,9 @@ struct BrowseView: View {
 
 
     private var allLabel: some View {
-        HStack(spacing: 2) {
-            Text("全部").font(.system(size: 12))
-            Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+        HStack(spacing: 3) {
+            Text("全部").font(.system(size: 15, weight: .medium))
+            Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
         }
         .foregroundStyle(.secondary)
         .padding(.leading, 8)

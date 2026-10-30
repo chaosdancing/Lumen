@@ -43,6 +43,15 @@ final class LibraryNavigationTests: XCTestCase {
         }
         app.buttons["library.quick.电影"].tap()
         XCTAssertTrue(app.buttons["browse.options"].waitForExistence(timeout: 5))
+        let movieShot = XCTAttachment(screenshot: app.screenshot())
+        movieShot.name = "iPad 电影顶栏"
+        movieShot.lifetime = .keepAlways
+        add(movieShot)
+
+        // 再次选择「媒体库」应回到媒体库首页（首页没有排序/筛选菜单）
+        sections.tap()
+        app.buttons["媒体库"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["browse.options"].waitForNonExistence(timeout: 5))
 
         // 偏好：类型 / 年代 / 评分 / 分级 / 收藏夹
         sections.tap()

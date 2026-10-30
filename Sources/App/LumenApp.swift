@@ -280,11 +280,28 @@ enum RootSection: String, CaseIterable, Identifiable, Hashable {
         case .settings: return "gearshape.fill"
         }
     }
+
+    var emoji: String {
+        switch self {
+        case .library: return "🎬"
+        case .preferences: return "❤️"
+        case .sources: return "📁"
+        case .servers: return "🖥️"
+        case .settings: return "⚙️"
+        }
+    }
 }
 
 @MainActor
 final class AppSectionRouter: ObservableObject {
     @Published var section: RootSection = .library
+    /// 再次选择「媒体库」时也回到媒体库首页（即使当前已经在该栏目）。
+    @Published var libraryHomeRequest = 0
+
+    func select(_ section: RootSection) {
+        if section == .library { libraryHomeRequest &+= 1 }
+        self.section = section
+    }
 }
 
 enum DeviceInfo {
@@ -307,26 +324,27 @@ struct SectionMenu: View {
         Menu {
             ForEach(RootSection.allCases) { section in
                 Button {
-                    router.section = section
+                    router.select(section)
                 } label: {
-                    Label(section.title,
-                          systemImage: router.section == section ? "checkmark" : section.symbol)
+                    // emoji 直接写进文字，避免系统菜单的图标列把 emoji 和选项拉开。
+                    Text("\(router.section == section ? "✓ " : "")\(section.emoji)  \(section.title)")
                 }
+                .accessibilityLabel(section.title)
             }
         } label: {
             HStack(spacing: 4) {
-                Text(router.section.title)
-                    .font(.system(size: 15, weight: .semibold))
+                Text("\(router.section.emoji) \(router.section.title)")
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.primary)
-                    .padding(.horizontal, 15)
-                    .frame(height: 30)
+                    .padding(.horizontal, 16)
+                    .frame(height: 34)
                     .background(Color.primary.opacity(0.12), in: Capsule())
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.secondary)
-                    .padding(.trailing, 10)
+                    .padding(.trailing, 11)
             }
-            .padding(3)
+            .padding(4)
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(.primary.opacity(0.10)))
             .contentShape(Capsule())
@@ -1062,6 +1080,10 @@ struct BrowseTab: View {
                 }
         }
         .onAppear { if selection == .home { selection = destination } }
+        .onChange(of: router.libraryHomeRequest) { _, _ in
+            guard DeviceInfo.isPad else { return }
+            select(.home)
+        }
         .environmentObject(nav)   // 挂在栈外面，push 出来的页面也能拿到
     }
 }

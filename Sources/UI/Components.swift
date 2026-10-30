@@ -216,12 +216,13 @@ struct BrowseSegmentedControl: View {
                 Button {
                     withAnimation(.smooth(duration: 0.28)) { onSelect(destination) }
                 } label: {
-                    Text(destination.title)
-                        .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
+                    Label(destination.title, systemImage: destination.symbol)
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: 15, weight: selected ? .semibold : .medium))
                         .foregroundStyle(selected ? Color.primary : Color.secondary)
                         .lineLimit(1)
-                        .padding(.horizontal, 13)
-                        .frame(height: 32)
+                        .padding(.horizontal, 14)
+                        .frame(height: 36)
                         .background {
                             if selected {
                                 Capsule()
@@ -237,7 +238,7 @@ struct BrowseSegmentedControl: View {
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
-        .padding(3)
+        .padding(4)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(.primary.opacity(0.10)))
         .animation(.smooth(duration: 0.28), value: selection)
@@ -252,9 +253,9 @@ struct SearchToolbarButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.primary)
-                .frame(width: 34, height: 34)
+                .frame(width: 38, height: 38)
                 .background(.regularMaterial, in: Circle())
                 .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
                 .contentShape(Circle())
