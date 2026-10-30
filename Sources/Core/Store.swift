@@ -1,5 +1,8 @@
 import Foundation
 import Security
+#if os(macOS)
+import AppKit
+#endif
 
 // MARK: - Keychain（密码不进 JSON）
 
@@ -120,16 +123,33 @@ enum StorePaths {
 
 @MainActor
 final class AppStore: ObservableObject {
-    @Published private(set) var sources: [MediaSourceConfig] = [] {
-        didSet { contentRevision &+= 1 }
-    }
+    @Published private(set) var sources: [MediaSourceConfig] = []
     @Published private(set) var library: [MediaItem] = [] {
-        didSet { contentRevision &+= 1 }
+        didSet { libraryVersion &+= 1 }
     }
-    @Published private(set) var progress: [String: PlaybackRecord] = [:] {
-        didSet { contentRevision &+= 1 }
+    /// 播放中每 5 秒会更新一次进度。若每次都广播 objectWillChange，所有观察 AppStore 的页面
+    /// （含播放器背后的首页）都会整页重算，所以这里手动控制广播：只有「状态变化」或距上次广播
+    /// 超过 `progressPublishInterval` 才通知 UI；其余更新静默写入，下一次渲染时自然读到最新值。
+    private(set) var progress: [String: PlaybackRecord] = [:] {
+        willSet { if !suppressProgressPublish { objectWillChange.send() } }
     }
-    private(set) var contentRevision: UInt64 = 0
+    private var suppressProgressPublish = false
+    private var hasUnpublishedProgress = false
+    private var lastProgressPublish = Date.distantPast
+    private static let progressPublishInterval: TimeInterval = 30
+    /// library 每次变化 +1，派生分组缓存以此判断是否失效
+    private var libraryVersion: UInt64 = 0
+    private struct GroupingCache {
+        let libraryVersion: UInt64
+        let metadataRevision: UInt64
+        let titles: [String: String]
+        let series: [SeriesGroup]
+        let movies: [MediaItem]
+    }
+    private var groupingCache: GroupingCache?
+    /// 持久化写盘放到串行队列，主线程只负责拷贝值；串行保证同一文件的写入顺序。
+    private let ioQueue = DispatchQueue(label: "lumen.store.io", qos: .utility)
+    private var progressWriteScheduled = false
     @Published private(set) var favorites: Set<String> = []
     @Published private(set) var iCloudProgressAvailable = false
     private var progressSync: ProgressCloudSync?
@@ -157,7 +177,18 @@ final class AppStore: ObservableObject {
         try? FileManager.default.removeItem(at: StorePaths.root.appendingPathComponent("mpv.log"))
         // 诊断探针不依赖窗口出现，放在这里保证一定执行
         Task { @MainActor in await DebugProbes.run(store: self) }
+        #if os(macOS)
+        // 写盘已改为后台串行队列；⌘Q 退出时不一定经过 scenePhase=.background，这里兜底刷盘。
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flushProgressSync() }
+        }
+        #endif
     }
+    #if os(macOS)
+    private var terminationObserver: NSObjectProtocol?
+    #endif
 
     // MARK: 读写
 
@@ -202,23 +233,55 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func persist() {
+    nonisolated private static func write<T: Encodable>(_ value: T, to url: URL) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
+        try? encoder.encode(value).write(to: url, options: .atomic)
+    }
+
+    /// 全量落盘：源/库结构变化时才用。值类型快照在主线程拷贝，编码与写盘在 ioQueue。
+    private func persist() {
         var sanitized = sources
         for i in sanitized.indices {
             sanitized[i].password = ""
         }
-        try? encoder.encode(sanitized).write(to: StorePaths.sources, options: .atomic)
-        try? encoder.encode(library).write(to: StorePaths.library, options: .atomic)
-        try? encoder.encode(progress).write(to: StorePaths.progress, options: .atomic)
-        try? encoder.encode(Array(favorites)).write(to: StorePaths.favorites, options: .atomic)
+        let library = library
+        let progress = progress
+        let favorites = Array(favorites)
+        ioQueue.async {
+            Self.write(sanitized, to: StorePaths.sources)
+            Self.write(library, to: StorePaths.library)
+            Self.write(progress, to: StorePaths.progress)
+            Self.write(favorites, to: StorePaths.favorites)
+        }
     }
 
+    /// 进度写入合并：同一个 runloop 周期内的多次更新只写一次，且不阻塞主线程。
     private func persistProgress() {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        try? encoder.encode(progress).write(to: StorePaths.progress, options: .atomic)
+        guard !progressWriteScheduled else { return }
+        progressWriteScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self, self.progressWriteScheduled else { return }   // 已被 flush 提前写掉
+            self.progressWriteScheduled = false
+            let snapshot = self.progress
+            self.ioQueue.async { Self.write(snapshot, to: StorePaths.progress) }
+        }
+    }
+
+    /// 收藏只写 favorites.json，不再连带重写 676 KB 的 library.json。
+    private func persistFavorites() {
+        let snapshot = Array(favorites)
+        ioQueue.async { Self.write(snapshot, to: StorePaths.favorites) }
+    }
+
+    /// 进入后台 / 关闭播放器时调用：把排队中的写盘同步刷完，避免被系统挂起时丢数据。
+    private func flushPendingWrites() {
+        if progressWriteScheduled {
+            progressWriteScheduled = false
+            let snapshot = progress
+            ioQueue.async { Self.write(snapshot, to: StorePaths.progress) }
+        }
+        ioQueue.sync {}
     }
 
     // MARK: 源管理
@@ -523,11 +586,35 @@ final class AppStore: ObservableObject {
         guard duration.isFinite, position.isFinite, duration > 0, position >= 0 else { return }
         let record = PlaybackRecord(itemID: itemID, position: position,
                                     duration: duration, updatedAt: Date())
-        progress[itemID] = record
+        let old = progress[itemID]
+        // 只有「继续观看 / 已看完」这类列表归属发生变化才需要立即刷新 UI；
+        // 单纯的位置推进最多 30 秒广播一次，避免播放时首页每 5 秒整页重算。
+        let stateChanged = old == nil
+            || old?.isInProgress != record.isInProgress
+            || old?.isFinished != record.isFinished
+        let now = Date()
+        if stateChanged || now.timeIntervalSince(lastProgressPublish) >= Self.progressPublishInterval {
+            progress[itemID] = record
+            lastProgressPublish = now
+            hasUnpublishedProgress = false
+        } else {
+            suppressProgressPublish = true
+            progress[itemID] = record
+            suppressProgressPublish = false
+            hasUnpublishedProgress = true
+        }
         persistProgress()
-        if let item = library.first(where: { $0.id == itemID }) {
+        if let item = item(withID: itemID) {
             progressSync?.record(record, for: item)
         }
+    }
+
+    /// 把静默写入的进度补发一次刷新（关闭播放器、进入后台时调用）。
+    private func publishPendingProgress() {
+        guard hasUnpublishedProgress else { return }
+        hasUnpublishedProgress = false
+        lastProgressPublish = Date()
+        objectWillChange.send()
     }
 
     func record(for itemID: String) -> PlaybackRecord? { progress[itemID] }
@@ -536,7 +623,7 @@ final class AppStore: ObservableObject {
 
     func toggleFavorite(_ id: String) {
         if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }
-        persist()
+        persistFavorites()
     }
 
     func isSeriesFavorite(_ group: SeriesGroup) -> Bool {
@@ -550,52 +637,130 @@ final class AppStore: ObservableObject {
         } else if let representative = itemIDs.min() {
             favorites.insert(representative)
         }
-        persist()
+        persistFavorites()
     }
 
     func clearProgress(itemID: String) {
         progress[itemID] = nil
         persistProgress()
-        if let item = library.first(where: { $0.id == itemID }) {
+        if let item = item(withID: itemID) {
             progressSync?.clear(item)
         }
     }
 
     func flushProgressSync() {
+        publishPendingProgress()
+        flushPendingWrites()
         progressSync?.flush(force: true)
         iCloudProgressAvailable = progressSync?.isAvailable ?? false
     }
 
+    // MARK: 索引
+
+    /// id → 下标、iCloud 进度 key → itemIDs。按 libraryVersion 惰性重建，
+    /// 避免每 5 秒一次的 `library.first(where:)` 和每次 iCloud 推送都对全库重新做正则 + SHA256。
+    private struct LibraryIndex {
+        let version: UInt64
+        let position: [String: Int]
+        let itemsByProgressKey: [String: [String]]
+    }
+    private var libraryIndex: LibraryIndex?
+    /// ProgressIdentity.key 只依赖条目自身的字段，按 id 记忆化，扫描替换后的旧条目通过
+    /// 「标识字段」比较判断是否仍可复用。
+    private var progressKeyMemo: [String: (fingerprint: String, key: String)] = [:]
+
+    private func currentIndex() -> LibraryIndex {
+        if let index = libraryIndex, index.version == libraryVersion { return index }
+        var position: [String: Int] = [:]
+        position.reserveCapacity(library.count)
+        var byKey: [String: [String]] = [:]
+        var memo: [String: (fingerprint: String, key: String)] = [:]
+        memo.reserveCapacity(library.count)
+        for (i, item) in library.enumerated() {
+            if position[item.id] == nil { position[item.id] = i }
+            let fingerprint = ProgressIdentity.fingerprint(for: item)
+            let key: String
+            if let cached = progressKeyMemo[item.id], cached.fingerprint == fingerprint {
+                key = cached.key
+            } else {
+                key = ProgressIdentity.key(for: item)
+            }
+            memo[item.id] = (fingerprint, key)
+            byKey[key, default: []].append(item.id)
+        }
+        progressKeyMemo = memo
+        let index = LibraryIndex(version: libraryVersion, position: position, itemsByProgressKey: byKey)
+        libraryIndex = index
+        return index
+    }
+
+    func item(withID id: String) -> MediaItem? {
+        guard let i = currentIndex().position[id], library.indices.contains(i),
+              library[i].id == id else { return library.first { $0.id == id } }
+        return library[i]
+    }
+
     private func applySyncedProgress(_ records: [String: CloudProgress]) {
+        guard !records.isEmpty else { return }
+        let index = currentIndex()
+        // 在副本上合并，最后一次性赋值，只触发一次 UI 刷新。
+        var next = progress
         var changed = false
-        for item in library {
-            guard let incoming = records[ProgressIdentity.key(for: item)] else { continue }
-            let localDate = progress[item.id]?.updatedAt ?? .distantPast
-            guard incoming.updatedAt > localDate else { continue }
-            if incoming.deleted {
-                if progress.removeValue(forKey: item.id) != nil { changed = true }
-            } else if incoming.duration > 0, incoming.position.isFinite,
-                      incoming.duration.isFinite {
-                progress[item.id] = PlaybackRecord(itemID: item.id, position: incoming.position,
-                                                    duration: incoming.duration,
-                                                    updatedAt: incoming.updatedAt)
-                changed = true
+        for (key, incoming) in records {
+            guard let ids = index.itemsByProgressKey[key] else { continue }
+            for id in ids {
+                let localDate = next[id]?.updatedAt ?? .distantPast
+                guard incoming.updatedAt > localDate else { continue }
+                if incoming.deleted {
+                    if next.removeValue(forKey: id) != nil { changed = true }
+                } else if incoming.duration > 0, incoming.position.isFinite,
+                          incoming.duration.isFinite {
+                    next[id] = PlaybackRecord(itemID: id, position: incoming.position,
+                                              duration: incoming.duration,
+                                              updatedAt: incoming.updatedAt)
+                    changed = true
+                }
             }
         }
-        if changed { persistProgress() }
+        guard changed else { return }
+        progress = next
+        hasUnpublishedProgress = false
+        lastProgressPublish = Date()
+        persistProgress()
     }
 
     // MARK: 派生视图
 
-    var seriesGroups: [SeriesGroup] {
-        let meta = MetadataStore.shared.items
+    /// 剧集分组涉及多条正则清洗 + 排序，1000+ 条目时单次几十毫秒。结果按
+    /// (libraryVersion, 刮削剧名) 缓存，进度/收藏变化不再触发重算。
+    private func grouping() -> GroupingCache {
+        let meta = MetadataStore.shared
+        if let cache = groupingCache, cache.libraryVersion == libraryVersion,
+           cache.metadataRevision == meta.revision {
+            return cache
+        }
         var titles: [String: String] = [:]
-        for (id, m) in meta {
+        for (id, m) in meta.items {
             if let t = m.seriesTitle, !t.isEmpty { titles[id] = t }
         }
-        return LibraryGrouper.series(from: library, scrapedTitles: titles)
+        // 元数据 revision 变化但剧名没变（例如只补了海报/简介）时直接复用分组结果。
+        if let cache = groupingCache, cache.libraryVersion == libraryVersion, cache.titles == titles {
+            let refreshed = GroupingCache(libraryVersion: libraryVersion, metadataRevision: meta.revision,
+                                          titles: titles, series: cache.series, movies: cache.movies)
+            groupingCache = refreshed
+            return refreshed
+        }
+        let cache = GroupingCache(libraryVersion: libraryVersion,
+                                  metadataRevision: meta.revision,
+                                  titles: titles,
+                                  series: LibraryGrouper.series(from: library, scrapedTitles: titles),
+                                  movies: LibraryGrouper.movies(from: library))
+        groupingCache = cache
+        return cache
     }
-    var movieItems: [MediaItem] { LibraryGrouper.movies(from: library) }
+
+    var seriesGroups: [SeriesGroup] { grouping().series }
+    var movieItems: [MediaItem] { grouping().movies }
 
     var continueWatching: [MediaItem] {
         library
@@ -634,9 +799,8 @@ final class AppStore: ObservableObject {
 
     func posterURL(for item: MediaItem) -> URL? {
         guard let config = source(for: item.sourceID), config.kind.isMediaServer,
-              let remoteID = item.remoteID,
-              let server = try? MediaServerSource(config: config) else { return nil }
-        return server.posterURL(for: remoteID)
+              let remoteID = item.remoteID else { return nil }
+        return MediaServerSource.posterURL(config: config, id: remoteID)
     }
 
     // MARK: 字幕

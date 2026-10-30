@@ -243,10 +243,15 @@ struct BrowseView: View {
     }
 
     var body: some View {
+        // entries 涉及全库分组 / 过滤 / 排序，body 里被引用 6+ 次；只算一次再传下去。
+        content(entries: entries)
+    }
+
+    private func content(entries: [BrowseEntry]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
             if destination == .home {
-                homeSections
+                homeSections(entries: entries)
             } else if entries.isEmpty {
                 EmptyStateView(symbol: destination.symbol,
                                title: "没有内容",
@@ -412,7 +417,7 @@ struct BrowseView: View {
 
     // MARK: 媒体库首页（大图轮播 + 三行分区）
 
-    @ViewBuilder private var homeSections: some View {
+    @ViewBuilder private func homeSections(entries: [BrowseEntry]) -> some View {
         let series = store.seriesGroups
         let movies = store.movieItems
         let continueItems = continuingEntries(series: series, movies: movies)

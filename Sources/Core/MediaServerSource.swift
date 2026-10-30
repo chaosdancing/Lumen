@@ -15,12 +15,16 @@ final class MediaServerSource: CatalogSource, @unchecked Sendable {
     private let base: URL
     private let session: URLSession
 
-    init(config: MediaSourceConfig) throws {
-        self.config = config
+    static func baseURL(for config: MediaSourceConfig) -> URL? {
         let scheme = config.usesHTTPS ? "https" : "http"
         let port = config.port == 0 ? "" : ":\(config.port)"
         let path = config.basePath == "/" ? "" : config.basePath
-        guard let url = URL(string: "\(scheme)://\(config.host)\(port)\(path)") else {
+        return URL(string: "\(scheme)://\(config.host)\(port)\(path)")
+    }
+
+    init(config: MediaSourceConfig) throws {
+        self.config = config
+        guard let url = Self.baseURL(for: config) else {
             throw SourceError.invalidURL
         }
         self.base = url
@@ -185,8 +189,20 @@ final class MediaServerSource: CatalogSource, @unchecked Sendable {
 
     /// 海报
     func posterURL(for id: String, maxHeight: Int = 450) -> URL? {
-        var comps = URLComponents(url: base.appendingPathComponent("Items/\(id)/Images/Primary"),
-                                  resolvingAgainstBaseURL: false)!
+        Self.posterURL(base: base, apiKey: apiKey, id: id, maxHeight: maxHeight)
+    }
+
+    /// 纯 URL 拼接，不创建 URLSession：封面卡片渲染时会高频调用。
+    /// （以前每次都 `try MediaServerSource(config:)`，每次渲染都新建一个带 delegate 的 URLSession，
+    /// 且从不 invalidate —— session 与 delegate 互相持有，等于持续泄漏。）
+    static func posterURL(config: MediaSourceConfig, id: String, maxHeight: Int = 450) -> URL? {
+        guard let base = baseURL(for: config) else { return nil }
+        return posterURL(base: base, apiKey: config.password, id: id, maxHeight: maxHeight)
+    }
+
+    private static func posterURL(base: URL, apiKey: String, id: String, maxHeight: Int) -> URL? {
+        guard var comps = URLComponents(url: base.appendingPathComponent("Items/\(id)/Images/Primary"),
+                                        resolvingAgainstBaseURL: false) else { return nil }
         comps.queryItems = [
             URLQueryItem(name: "maxHeight", value: String(maxHeight)),
             URLQueryItem(name: "quality", value: "90"),

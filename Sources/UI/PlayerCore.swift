@@ -18,7 +18,12 @@ struct MediaTrack: Identifiable, Hashable {
 final class PlayerCore: ObservableObject {
     enum Backend { case av, mpv }
 
-    @Published private(set) var isPlaying = false
+    @Published private(set) var isPlaying = false {
+        didSet {
+            guard oldValue != isPlaying, backend == .mpv else { return }
+            renderHost?.playbackStateChanged(isPlaying: isPlaying)
+        }
+    }
     @Published private(set) var currentTime: Double = 0
     @Published private(set) var duration: Double = 0
     @Published var errorText: String?
@@ -52,6 +57,11 @@ final class PlayerCore: ObservableObject {
     private var avWatchdog: Task<Void, Never>?
     private var colorModeChecked = false
     private var lastColorSignature: String?
+    private var dolbyVisionApplied = false
+    /// 是否已检查过「送往 GL 的像素格式」是否需要降到 8bit
+    private var pixelFormatChecked = false
+    /// ticker 计数：低频任务（轨道列表）不必每 0.25 秒做一次
+    private var tickCount = 0
     private var desiredRate: Float = 1
 
     init() {
@@ -62,11 +72,13 @@ final class PlayerCore: ObservableObject {
             guard let self else { return }
             Task { @MainActor in
                 guard self.backend == .av else { return }
-                self.currentTime = time.seconds
+                // @Published 每次赋值都会触发 objectWillChange，即便值没变；
+                // 暂停时每 0.25 秒整页重绘播放器 UI，这里只在变化时才写。
+                self.setIfChanged(\.currentTime, time.seconds)
                 if let d = self.player.currentItem?.duration.seconds, d.isFinite, d > 0 {
-                    self.duration = d
+                    self.setIfChanged(\.duration, d)
                 }
-                self.isPlaying = self.player.rate > 0
+                self.setIfChanged(\.isPlaying, self.player.rate > 0)
             }
         }
     }
@@ -278,7 +290,7 @@ final class PlayerCore: ObservableObject {
             renderHost?.destroyRenderContext()
             if let ctx = mpvHandle {
                 mpvHandle = nil
-                mpv_terminate_destroy(ctx)
+                Self.destroyInBackground(ctx)
             }
         }
         pendingTarget = nil
@@ -354,6 +366,23 @@ final class PlayerCore: ObservableObject {
         lastTrackCount = -1
         colorModeChecked = false
         lastColorSignature = nil
+        dolbyVisionApplied = false
+        pixelFormatChecked = false
+        tickCount = 0
+    }
+
+    private func setIfChanged<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<PlayerCore, T>, _ value: T) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
+
+    /// mpv_terminate_destroy 会等待解复用/解码/网络线程全部退出，网络源上常见几百毫秒甚至秒级，
+    /// 以前在主线程同步调用，关闭播放器时 UI 卡住。mpv 句柄可跨线程销毁；调用前 render context
+    /// 已在主线程释放、mpvHandle 已置空，不会再有人使用这个句柄。
+    nonisolated private static func destroyInBackground(_ ctx: OpaquePointer) {
+        let handle = MPVHandleBox(ctx)
+        DispatchQueue.global(qos: .utility).async {
+            mpv_terminate_destroy(handle.ctx)
+        }
     }
 
     /// AVPlayer：从 asset 里读可选音轨 / 字幕组
@@ -523,8 +552,11 @@ final class PlayerCore: ObservableObject {
         // MPVKit iOS 构建里 videotoolbox-gl 是 disabled，直接 hwdec 会导致颜色错乱/蓝屏，
         // 用 -copy 让帧回到系统内存再由 GL 正常上传
         mpvSetOption(ctx, "hwdec", "videotoolbox-copy")
-        // 10bit(p010) 走 GL 上传会偏绿，先转成 8bit yuv420p
-        mpvSetOption(ctx, "vf", "format=yuv420p")
+        // 10bit(p010) 走 GL 上传会偏绿。以前对所有视频都加 `vf=format=yuv420p`，
+        // 让每一帧都在 CPU 上做一次 swscale（nv12 → yuv420p，4K 下单核满载、发热掉帧）。
+        // 现在让 VideoToolbox 直接输出 8bit NV12：10bit 片源由硬件完成降位深，
+        // 8bit 片源零额外开销；软解等仍输出 10bit 的情况由 ticker 里按需补 vf 兜底。
+        mpvSetOption(ctx, "hwdec-image-format", "nv12")
         #else
         mpvSetOption(ctx, "hwdec", "videotoolbox")
         #endif
@@ -612,9 +644,10 @@ final class PlayerCore: ObservableObject {
                         }
                     }
                 }
-                if let t = self.mpvDouble("time-pos") { self.currentTime = t }
+                self.tickCount &+= 1
+                if let t = self.mpvDouble("time-pos") { self.setIfChanged(\.currentTime, t) }
                 if let d = self.mpvDouble("duration"), d > 0 {
-                    self.duration = d
+                    self.setIfChanged(\.duration, d)
                     if self.resumeSeek > 1 {
                         let target = min(self.resumeSeek, d - 3)
                         self.resumeSeek = 0
@@ -624,9 +657,13 @@ final class PlayerCore: ObservableObject {
                         }
                     }
                 }
-                if let paused = self.mpvFlag("pause") { self.isPlaying = !paused }
+                if let paused = self.mpvFlag("pause") { self.setIfChanged(\.isPlaying, !paused) }
                 self.configureDolbyVisionIfNeeded()
-                self.refreshMPVTracksIfNeeded()
+                self.configurePixelFormatIfNeeded()
+                // 轨道列表只在起播/切换时变化：起播前 2 秒逐 tick 检查，之后每 2 秒一次
+                if self.tickCount <= 8 || self.tickCount % 8 == 0 {
+                    self.refreshMPVTracksIfNeeded()
+                }
             }
         }
     }
@@ -641,8 +678,10 @@ final class PlayerCore: ObservableObject {
             AppLog.info("视频色彩：\(signature)")
             lastColorSignature = signature
         }
-        guard matrix.lowercased().contains("dolbyvision") else { return }
+        // 拿到色彩参数后只判断一次，非杜比视界片源不再每 0.25 秒读 3 个字符串属性
         colorModeChecked = true
+        guard matrix.lowercased().contains("dolbyvision") else { return }
+        dolbyVisionApplied = true
 
         // libmpv render API 的旧 GPU 路径不处理 DoVi RPU。MPVKit 自带的 FFmpeg
         // libplacebo 滤镜先应用 RPU 并输出 BT.709 SDR，再由现有 GL 视图显示。
@@ -654,6 +693,31 @@ final class PlayerCore: ObservableObject {
             errorText = "该 Dolby Vision 视频无法启用色彩转换"
         }
     }
+
+    /// 兜底：硬解失败回落软解、或 VideoToolbox 不接受 nv12 时，送往 GL 的仍可能是 10/12bit 格式，
+    /// 只有这时才加 `vf=format=yuv420p`（iOS GL 上传高位深会偏绿）。
+    private func configurePixelFormatIfNeeded() {
+        #if os(iOS)
+        guard !pixelFormatChecked, colorModeChecked,
+              let format = mpvString("video-params/pixelformat") else { return }
+        pixelFormatChecked = true
+        guard !dolbyVisionApplied else { return }   // 杜比视界滤镜链已自带 format=yuv420p
+        guard Self.isHighBitDepth(format) else { return }
+        let rc = mpvSet("vf", "format=yuv420p")
+        AppLog.info("高位深像素格式 \(format)，启用 8bit 转换 rc=\(rc)")
+        #endif
+    }
+
+    nonisolated static func isHighBitDepth(_ format: String) -> Bool {
+        format.lowercased().range(of: #"(p0(10|12|16)|p(9|10|12|14|16))"#,
+                                  options: .regularExpression) != nil
+    }
+}
+
+/// 把 mpv 句柄带到后台线程销毁用。mpv client API 本身线程安全。
+private struct MPVHandleBox: @unchecked Sendable {
+    let ctx: OpaquePointer
+    init(_ ctx: OpaquePointer) { self.ctx = ctx }
 }
 
 // MARK: - mpv 画面（wid 嵌入）

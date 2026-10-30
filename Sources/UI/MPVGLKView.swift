@@ -41,6 +41,7 @@ final class MPVGLKView: UIView, MPVRenderHost {
             kEAGLDrawablePropertyColorFormat: kEAGLColorFormatRGBA8
         ]
         setupContext()
+        observeLifecycle()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -58,12 +59,61 @@ final class MPVGLKView: UIView, MPVRenderHost {
         AppLog.info("iOS GL 环境就绪（EAGLContext ES3）")
     }
 
+    /// 播放中：视频最高 60fps，ProMotion 设备上不必按 120Hz 唤醒主线程。
+    /// 暂停时：画面只会因 seek / 切字幕而变化，10fps 足够及时，功耗降到约 1/6。
+    private var isPlaybackActive = true
+    private var lifecycleObservers: [NSObjectProtocol] = []
+
     private func startDisplayLink() {
         guard displayLink == nil else { return }
         displayLinkTarget.view = self
         let link = CADisplayLink(target: displayLinkTarget, selector: #selector(DisplayLinkTarget.tick))
         link.add(to: .main, forMode: .common)
         displayLink = link
+        applyFrameRate()
+        updateDisplayLinkPaused()
+    }
+
+    private func applyFrameRate() {
+        guard let displayLink else { return }
+        displayLink.preferredFrameRateRange = isPlaybackActive
+            ? CAFrameRateRange(minimum: 24, maximum: 60, preferred: 60)
+            : CAFrameRateRange(minimum: 8, maximum: 15, preferred: 10)
+    }
+
+    /// 不在窗口里或 App 进后台时完全停掉：后台继续提交 GL 命令还会被系统直接杀进程。
+    private func updateDisplayLinkPaused() {
+        let background = UIApplication.shared.applicationState == .background
+        displayLink?.isPaused = window == nil || background
+        if displayLink?.isPaused == false { needsRender = true }
+    }
+
+    func playbackStateChanged(isPlaying: Bool) {
+        guard isPlaybackActive != isPlaying else { return }
+        isPlaybackActive = isPlaying
+        applyFrameRate()
+        needsRender = true
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        updateDisplayLinkPaused()
+    }
+
+    private func observeLifecycle() {
+        let center = NotificationCenter.default
+        let pause: (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.displayLink?.isPaused = true }
+        }
+        let resume: (Notification) -> Void = { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateDisplayLinkPaused() }
+        }
+        lifecycleObservers = [
+            center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                               object: nil, queue: .main, using: pause),
+            center.addObserver(forName: UIApplication.willEnterForegroundNotification,
+                               object: nil, queue: .main, using: resume)
+        ]
     }
 
     private var renderCount = 0
@@ -213,6 +263,7 @@ final class MPVGLKView: UIView, MPVRenderHost {
     }
 
     deinit {
+        lifecycleObservers.forEach(NotificationCenter.default.removeObserver)
         displayLink?.invalidate()
         destroyRenderContext()
     }

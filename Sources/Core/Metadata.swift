@@ -202,6 +202,8 @@ final class MetadataStore: ObservableObject {
     func invalidate(items list: [MediaItem]) {
         diskLookups.removeAll()
         diskMisses.removeAll()
+        var staleIdentities: Set<String> = []
+        var currentScopes: Set<String> = []
         for item in list {
             requests[item.id]?.task.cancel()
             requests[item.id] = nil
@@ -221,12 +223,17 @@ final class MetadataStore: ObservableObject {
             interimItems.remove(item.id)
             loadState[item.id] = nil
             try? FileManager.default.removeItem(at: cacheDir.appendingPathComponent(Self.fileName(item.id)))
-            MetadataCache.invalidateMerged(identity: "item#\(item.id)")
+            let scope = sourceConfig(for: item.sourceID).map { fingerprint($0) }
+            if let scope { currentScopes.insert(scope) }
+            MetadataCache.invalidateMerged(identity: "item#\(item.id)", fingerprint: scope)
+            staleIdentities.insert("item#\(item.id)")
             if let key = Self.seriesKey(for: item) {
                 seriesCache[key] = nil
-                MetadataCache.invalidateMerged(identity: "series#\(key)")
+                MetadataCache.invalidateMerged(identity: "series#\(key)", fingerprint: scope)
+                staleIdentities.insert("series#\(key)")
             }
         }
+        MetadataCache.sweepStaleMerged(identities: staleIdentities, currentFingerprints: currentScopes)
         for sourceID in Set(list.map(\.sourceID)) { MetadataCache.invalidateSourceImages(sourceID) }
         revision &+= 1
     }
@@ -277,9 +284,10 @@ final class MetadataStore: ObservableObject {
         guard let key = meta.seriesCacheKey, let fingerprint = meta.sourceFingerprint,
               let sourceID = UUID(uuidString: String(meta.itemID.split(separator: "#").first ?? "")),
               let config = sourceConfig(for: sourceID),
-              fingerprint == MetadataCache.sourceFingerprint(config) else { return nil }
+              fingerprint == self.fingerprint(config) else { return nil }
         let identity = MetadataCache.mergedIdentity("series#\(key)", fingerprint: fingerprint)
-        guard let series = seriesCache[key] ?? MetadataCache.local(identity: identity, sourceConfig: config),
+        // seriesCache / cachedEnvelope 均为内存记忆化，避免渲染时每张卡片都读盘 + 解码 JSON
+        guard let series = seriesCache[key] ?? cachedEnvelope(identity: identity, config: config),
               series.sourceFingerprint == fingerprint,
               series.preferNFO == Preferences.shared.preferNFO,
               series.metadataLanguage == TMDBClient.language else { return nil }
@@ -666,7 +674,7 @@ final class MetadataStore: ObservableObject {
                meta.metadataLanguage == TMDBClient.language,
                let sourceID = UUID(uuidString: String(meta.itemID.split(separator: "#").first ?? "")),
                let config = sourceConfig(for: sourceID),
-               meta.sourceFingerprint == MetadataCache.sourceFingerprint(config) {
+               meta.sourceFingerprint == fingerprint(config) {
                 items[meta.itemID] = meta
             }
         }

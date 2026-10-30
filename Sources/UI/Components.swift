@@ -55,13 +55,14 @@ struct ArtworkView: View {
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .task(id: taskIdentity) {
             let identity = taskIdentity
-            image = nil
-            guard let item else { return }
+            guard let item else { image = nil; return }
+            // 先查内存再清空，命中时不会先闪一下占位图
             if let hit = artwork.cached(for: item, variant: variant, in: store) {
                 guard !Task.isCancelled, identity == taskIdentity else { return }
                 image = hit
                 return
             }
+            image = nil
             let loaded = await artwork.image(for: item, variant: variant, in: store)
             guard !Task.isCancelled, identity == taskIdentity else { return }
             withAnimation(.easeOut(duration: 0.18)) { image = loaded }
@@ -72,10 +73,16 @@ struct ArtworkView: View {
         guard let item else { return "empty" }
         // Core's key includes artworkMetadata paths/provenance and both backdrop/poster fallback.
         let cacheIdentity = artwork.requestIdentity(for: item, variant: variant, in: store)
-        let poster = metadata.cachedPosterURL(for: item)?.absoluteString ?? ""
-        let backdrop = metadata.backdropURL(for: item)?.absoluteString ?? ""
-        let urls = String(decoding: (try? JSONEncoder().encode([poster, backdrop])) ?? Data(), as: UTF8.self)
-        return "\(cacheIdentity)#\(urls)"
+        // 封面 URL 会在图片下载落盘后从远端地址切到 file URL，借此触发一次重载；
+        // validImage(at:) 已按 (mtime,size) 记忆化，这里每张卡片只剩 stat，不再整图读盘解码。
+        let url: String
+        switch variant {
+        case .backdrop:   // 横版缺图会回退竖版海报，两者都要参与
+            url = (metadata.backdropURL(for: item)?.absoluteString ?? "") + "|"
+                + (metadata.cachedPosterURL(for: item)?.absoluteString ?? "")
+        case .poster, .thumb: url = metadata.cachedPosterURL(for: item)?.absoluteString ?? ""
+        }
+        return "\(cacheIdentity)#\(url)"
     }
 
     private var placeholder: some View {

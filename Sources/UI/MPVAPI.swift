@@ -64,6 +64,12 @@ protocol MPVRenderHost: AnyObject {
     var renderContextReady: Bool { get }
     func createRenderContext(mpv: OpaquePointer) -> Bool
     func destroyRenderContext()
+    /// 播放 / 暂停切换时通知宿主调整刷新节奏（iOS 用来降低 CADisplayLink 频率）
+    func playbackStateChanged(isPlaying: Bool)
+}
+
+extension MPVRenderHost {
+    func playbackStateChanged(isPlaying: Bool) {}
 }
 
 // MARK: - render API（把 mpv 的帧画到自己的 GL 上下文里）

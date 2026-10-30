@@ -3,6 +3,11 @@ import CryptoKit
 
 /// 不使用 sourceID：同一部影片在 Mac 和 iPad 上分别添加片源时仍能对应。
 enum ProgressIdentity {
+    /// 参与 key 计算的原始字段拼接，用来判断记忆化的 key 是否还能复用（远比正则 + SHA256 便宜）。
+    static func fingerprint(for item: MediaItem) -> String {
+        "\(item.seriesTitle ?? "")\u{1}\(item.season ?? -1)\u{1}\(item.episode ?? -1)\u{1}\(item.title)\u{1}\(item.fileName)\u{1}\(item.year ?? 0)"
+    }
+
     static func key(for item: MediaItem) -> String {
         let identity: String
         if let series = item.seriesTitle, let season = item.season, let episode = item.episode {
@@ -63,6 +68,9 @@ final class ProgressCloudSync {
     private var dirty: Set<String> = []
     private var lastUpload: [String: Date] = [:]
     private var observer: NSObjectProtocol?
+    private var persistScheduled = false
+    /// 串行，保证 progress-sync.json 的写入顺序
+    private static let ioQueue = DispatchQueue(label: "lumen.progress-sync.io", qos: .utility)
     private var onChange: (([String: CloudProgress]) -> Void)?
     private(set) var isAvailable = false
 
@@ -83,10 +91,12 @@ final class ProgressCloudSync {
         // 旧版本可能在没有 iCloud 权限时已经积累了本地记录。启动时重新标记，
         // 这样权限恢复或换成正式签名后，历史进度也会补传，而不只上传新进度。
         dirty.formUnion(records.keys)
-        let byID = Dictionary(library.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for (id, record) in progress {
-            guard let item = byID[id] else { continue }
-            update(record: CloudProgress(record), for: ProgressIdentity.key(for: item))
+        if !progress.isEmpty {
+            let byID = Dictionary(library.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for (id, record) in progress {
+                guard let item = byID[id] else { continue }
+                update(record: CloudProgress(record), for: ProgressIdentity.key(for: item))
+            }
         }
 
         observer = NotificationCenter.default.addObserver(
@@ -96,7 +106,7 @@ final class ProgressCloudSync {
             Task { @MainActor in self?.receiveCloudChange(notification) }
         }
         isAvailable = cloud.synchronize()
-        mergeFromCloud()
+        _ = mergeFromCloud()
         onChange(records)
         flush(force: true)
     }
@@ -151,14 +161,21 @@ final class ProgressCloudSync {
             AppLog.error("iCloud 观看进度已达到 KVS 容量上限，仍保存在本地")
             return
         }
-        mergeFromCloud()
-        onChange?(records)
+        // 只把本次真正变化的条目交给上层合并，而不是每次推送都把全部记录过一遍。
+        let changed = mergeFromCloud(keys: notification.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String])
+        if !changed.isEmpty {
+            onChange?(records.filter { changed.contains($0.key) })
+        }
         flush()
     }
 
-    private func mergeFromCloud() {
-        var changed = false
-        for key in cloud.dictionaryRepresentation.keys where key.hasPrefix("progress.v1.") {
+    /// - Parameter keys: 只检查这些 key；nil 表示全量（启动时）。
+    /// - Returns: 被远端覆盖的 key。
+    @discardableResult
+    private func mergeFromCloud(keys: [String]? = nil) -> Set<String> {
+        var changed: Set<String> = []
+        let candidates = keys ?? Array(cloud.dictionaryRepresentation.keys)
+        for key in candidates where key.hasPrefix("progress.v1.") {
             guard let data = cloud.data(forKey: key),
                   let remote = try? decoder.decode(CloudProgress.self, from: data) else { continue }
             if let local = records[key], local.updatedAt >= remote.updatedAt {
@@ -167,14 +184,28 @@ final class ProgressCloudSync {
             }
             records[key] = remote
             dirty.remove(key)
-            changed = true
+            changed.insert(key)
         }
-        if changed { persist() }
+        if !changed.isEmpty { persist() }
+        return changed
     }
 
+    /// 合并同一轮内的多次写入（启动时逐条 update 会触发 N 次），编码与写盘放到后台。
     private func persist() {
-        if let data = try? encoder.encode(records) {
-            try? data.write(to: diskURL, options: .atomic)
+        guard !persistScheduled else { return }
+        persistScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.persistScheduled = false
+            let snapshot = self.records
+            let url = self.diskURL
+            Self.ioQueue.async {
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                if let data = try? encoder.encode(snapshot) {
+                    try? data.write(to: url, options: .atomic)
+                }
+            }
         }
     }
 }
