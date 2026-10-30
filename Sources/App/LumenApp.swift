@@ -315,7 +315,12 @@ struct SectionMenu: View {
                 Text(router.section.title).font(.headline)
                 Image(systemName: "chevron.down").font(.caption.weight(.semibold))
             }
-            .contentShape(Rectangle())
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))
+            .contentShape(Capsule())
         }
         .accessibilityLabel("一级栏目：\(router.section.title)")
         .accessibilityIdentifier("app.sections")
@@ -1015,6 +1020,12 @@ struct BrowseTab: View {
                                 Text(selection.title).font(.headline)
                                 Image(systemName: "chevron.down").font(.caption.weight(.semibold))
                             }
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 12)
+                            .frame(height: 34)
+                            .background(.regularMaterial, in: Capsule())
+                            .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))
+                            .contentShape(Capsule())
                         }
                         .accessibilityLabel("媒体库分类：\(selection.title)")
                         .accessibilityIdentifier("library.categories")
@@ -1039,7 +1050,10 @@ struct BrowseTab: View {
                             Button { nav.open(BrowseRoute.list(.search)) } label: {
                                 Image(systemName: "magnifyingglass")
                                     .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(.primary)
                                     .frame(width: 34, height: 34)
+                                    .background(.regularMaterial, in: Circle())
+                                    .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
                                     .contentShape(Circle())
                             }
                             .buttonStyle(.plain)
