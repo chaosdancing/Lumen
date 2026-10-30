@@ -399,7 +399,9 @@ struct RootView: View {
         platformContent
             .preferredColorScheme(preferredScheme)
             .task {
-                // 诊断入口：容器里放 shot.flag 才生效，用于无触摸环境截图核对版式
+                // 诊断入口：容器里放 section-test.flag / shot.flag 才生效，
+                // 用于无触摸环境切栏目并截图核对版式。
+                applySectionTestIfRequested()
                 await DebugProbes.captureWindowIfRequested()
             }
         #endif
@@ -524,6 +526,23 @@ struct RootView: View {
     }
 
     #if os(iOS)
+    /// DEBUG 诊断：把 section-test.flag 的内容当作栏目名，启动后直接切过去。
+    private func applySectionTestIfRequested() {
+        #if DEBUG
+        let flag = StorePaths.root.appendingPathComponent("section-test.flag")
+        guard let raw = try? String(contentsOf: flag, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: flag)
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "library":     router.section = .library
+        case "preferences": router.section = .preferences
+        case "sources":     router.section = .sources
+        case "servers":     router.section = .servers
+        case "settings":    router.section = .settings
+        default:            break
+        }
+        #endif
+    }
+
     /// iPad 根视图：四个一级栏目共用一个内容区，栏目切换收进顶栏下拉菜单。
     @ViewBuilder private var padRoot: some View {
         switch router.section {
