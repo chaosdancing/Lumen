@@ -329,6 +329,8 @@ struct SectionMenu: View {
                 Text("\(router.section.emoji) \(router.section.title)")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, 16)
                     .frame(height: 34)
                     .background(Color.primary.opacity(0.12), in: Capsule())

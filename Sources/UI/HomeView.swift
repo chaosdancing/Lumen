@@ -387,19 +387,26 @@ struct BrowseView: View {
             // 搜索固定在最后，保证始终在最右上角。
             if onSearch != nil || (destination != .home && destination != .search) {
                 ToolbarItem(placement: .primaryAction) {
-                    HStack(spacing: 8) {
-                        if let onSearch {
-                            SearchToolbarButton(action: onSearch, identifier: searchIdentifier)
+                    let showsOptions = destination != .home && destination != .search
+                    if let onSearch, showsOptions {
+                        HStack(spacing: 2) {
+                            SearchToolbarButton(action: onSearch,
+                                                identifier: searchIdentifier,
+                                                standalone: false)
+                            optionsMenu(standalone: false)
                         }
-                        if destination != .home && destination != .search {
-                            if DeviceInfo.isPad {
-                                optionsMenu
-                            } else {
-                                sortControls
-                            }
+                        .padding(3)
+                        .background(.regularMaterial, in: Capsule())
+                        .overlay(Capsule().strokeBorder(.primary.opacity(0.10)))
+                    } else if let onSearch {
+                        SearchToolbarButton(action: onSearch, identifier: searchIdentifier)
+                    } else if showsOptions {
+                        if DeviceInfo.isPad {
+                            optionsMenu(standalone: true)
+                        } else {
+                            sortControls
                         }
                     }
-                    .buttonStyle(.plain)
                 }
             }
             #endif
@@ -445,7 +452,9 @@ struct BrowseView: View {
     }
 
     /// iPad 顶栏空间有限：把排序、筛选、网格/列表收进一个圆形菜单，给分类胶囊留位置。
-    private var optionsMenu: some View {
+    private var optionsMenu: some View { optionsMenu(standalone: true) }
+
+    private func optionsMenu(standalone: Bool) -> some View {
         Menu {
             Picker("排序", selection: $sort) {
                 ForEach(SortOption.allCases) { option in
@@ -469,8 +478,13 @@ struct BrowseView: View {
                 .font(.system(size: 18, weight: .bold))
                 .foregroundStyle(.primary)
                 .frame(width: 38, height: 38)
-                .background(.regularMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
+                .background {
+                    if standalone {
+                        Circle()
+                            .fill(.regularMaterial)
+                            .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
+                    }
+                }
                 .contentShape(Circle())
         }
         .tint(Color.primary)
@@ -526,12 +540,6 @@ struct BrowseView: View {
             .padding(.top, 24)
         }
         .padding(.bottom, 24)
-        .background(alignment: .top) {
-            // 头图在下方继续延展：同一张剧照虚化后铺到影片区背后，再淡出到页面底色。
-            if DeviceInfo.isPad, prefs.showCarousel, let item = heroItem ?? entries.first?.posterItem {
-                HomeArtworkExtension(item: item, scheme: colorScheme, heroHeight: heroHeight)
-            }
-        }
     }
 
     /// 首页搜索入口：点一下进搜索页并自动聚焦输入框（和 macOS 的 ⌘F 同一条路径）
@@ -812,41 +820,6 @@ struct BrowseView: View {
 
 // MARK: - 列表行
 
-
-/// 头图下方的背景延展：同一张剧照虚化后继续铺开，在影片区下方淡出。
-private struct HomeArtworkExtension: View {
-    let item: MediaItem
-    var scheme: ColorScheme
-    var heroHeight: CGFloat
-
-    private var wash: Color { scheme == .dark ? .black : .white }
-    private var washOpacity: Double { scheme == .dark ? 0.42 : 0.55 }
-    private var totalHeight: CGFloat { heroHeight + 500 }
-
-    var body: some View {
-        GeometryReader { proxy in
-            ArtworkView(item: item, cornerRadius: 0, variant: .backdrop)
-                .frame(width: proxy.size.width, height: proxy.size.height)
-                .clipped()
-                .blur(radius: 34, opaque: false)
-                .overlay(wash.opacity(washOpacity))
-                .mask {
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0.0),
-                            .init(color: .clear, location: max(0.0, heroHeight / totalHeight - 0.07)),
-                            .init(color: .black.opacity(0.90), location: heroHeight / totalHeight + 0.10),
-                            .init(color: .black.opacity(0.48), location: 0.86),
-                            .init(color: .clear, location: 1.0)
-                        ],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                }
-        }
-        .frame(height: totalHeight)
-        .allowsHitTesting(false)
-    }
-}
 
 private struct HomeBrowseBackdrop: View {
     let shows: Bool

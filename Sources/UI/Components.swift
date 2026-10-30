@@ -249,6 +249,8 @@ struct BrowseSegmentedControl: View {
 struct SearchToolbarButton: View {
     let action: () -> Void
     var identifier = "library.search"
+    /// 和更多按钮并排放在同一个胶囊里时为 false，圆底由外层容器提供。
+    var standalone = true
 
     var body: some View {
         Button(action: action) {
@@ -256,8 +258,13 @@ struct SearchToolbarButton: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 38, height: 38)
-                .background(.regularMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
+                .background {
+                    if standalone {
+                        Circle()
+                            .fill(.regularMaterial)
+                            .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
+                    }
+                }
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
