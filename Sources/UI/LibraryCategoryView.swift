@@ -3,6 +3,9 @@ import SwiftUI
 /// 先展示分类桶，点击后再进入该分类的影片列表。
 struct LibraryCategoryView: View {
     let kind: LibraryQuery.CategoryKind
+    /// iPad 顶栏搜索入口
+    var onSearch: (() -> Void)? = nil
+    var searchIdentifier = "library.search"
 
     @EnvironmentObject private var store: AppStore
     @ObservedObject private var metadata = MetadataStore.shared
@@ -52,6 +55,15 @@ struct LibraryCategoryView: View {
         .task(id: kind) {
             await metadata.scrapeAll(items: store.library, in: store)
         }
+        #if os(iOS)
+        .toolbar {
+            if let onSearch {
+                ToolbarItem(placement: .topBarTrailing) {
+                    SearchToolbarButton(action: onSearch, identifier: searchIdentifier)
+                }
+            }
+        }
+        #endif
     }
 
     private func card(_ category: LibraryQuery.CategoryCount, posters: [MediaItem]) -> some View {

@@ -21,9 +21,7 @@ final class LibraryNavigationTests: XCTestCase {
             return frame.width > frame.height
         }, evaluatedWith: nil)
         waitForExpectations(timeout: 5)
-        XCTAssertTrue(app.buttons["library.categories"].waitForExistence(timeout: 5))
-        app.buttons["library.categories"].tap()
-        app.buttons["媒体库"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["app.sections"].waitForExistence(timeout: 5))
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "iPad 横屏首页"
         attachment.lifetime = .keepAlways
@@ -31,33 +29,41 @@ final class LibraryNavigationTests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
     }
 
-    func testTopLevelCategoriesAndSearch() {
+    func testLibraryAndPreferencesQuickLinks() {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
-        let categories = app.buttons["library.categories"]
-        XCTAssertTrue(categories.waitForExistence(timeout: 20))
+        let sections = app.buttons["app.sections"]
+        XCTAssertTrue(sections.waitForExistence(timeout: 20))
+        XCTAssertTrue(sections.label.contains("媒体库"))
 
-        // iPad 顶栏快捷入口：年代 / 评分 / 分级 / 类型
-        for title in ["年代", "评分", "分级", "类型"] {
-            let chip = app.buttons["library.quick.\(title)"]
-            XCTAssertTrue(chip.waitForExistence(timeout: 5), title)
-            chip.tap()
-            XCTAssertTrue(categories.waitForExistence(timeout: 5))
-            XCTAssertTrue(categories.label.contains(title))
+        // 媒体库：继续观看 / 电影 / 电视剧
+        for title in ["继续观看", "电影", "电视剧"] {
+            XCTAssertTrue(app.buttons["library.quick.\(title)"].waitForExistence(timeout: 5), title)
         }
+        app.buttons["library.quick.电影"].tap()
+        XCTAssertTrue(app.buttons["browse.options"].waitForExistence(timeout: 5))
 
-        // 分类菜单仍保留电影 / 电视剧 / 媒体库等入口
-        for title in ["电影", "电视剧", "媒体库"] {
-            categories.tap()
-            let choice = app.buttons[title].firstMatch
-            XCTAssertTrue(choice.waitForExistence(timeout: 5), title)
-            choice.tap()
-            XCTAssertTrue(categories.waitForExistence(timeout: 5))
-            XCTAssertTrue(categories.label.contains(title))
+        // 偏好：类型 / 年代 / 评分 / 分级 / 收藏夹
+        sections.tap()
+        app.buttons["偏好"].firstMatch.tap()
+        XCTAssertTrue(sections.waitForExistence(timeout: 5))
+        XCTAssertTrue(sections.label.contains("偏好"))
+        for title in ["类型", "年代", "评分", "分级", "收藏夹"] {
+            XCTAssertTrue(app.buttons["preferences.quick.\(title)"].waitForExistence(timeout: 5), title)
         }
+        let prefShot = XCTAttachment(screenshot: app.screenshot())
+        prefShot.name = "iPad 偏好"
+        prefShot.lifetime = .keepAlways
+        add(prefShot)
 
-        let search = app.buttons["library.search"]
+        app.buttons["preferences.quick.类型"].tap()
+        XCTAssertTrue(app.staticTexts["按已缓存的影视类型浏览。"].waitForExistence(timeout: 5))
+        app.buttons["preferences.quick.收藏夹"].tap()
+        XCTAssertTrue(app.buttons["browse.options"].waitForExistence(timeout: 5))
+
+        // 搜索按钮保持在右上角
+        let search = app.buttons["preferences.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
         let field = app.textFields["搜索媒体库"]
@@ -67,26 +73,23 @@ final class LibraryNavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["没有内容"].waitForExistence(timeout: 5))
         app.buttons["清除搜索"].tap()
         XCTAssertTrue(app.staticTexts["推荐观看 · 继续观看优先，其次未看高分与最近添加"].exists)
-        let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.lifetime = .keepAlways
-        add(attachment)
     }
 
     func testPadSectionMenuConsolidatesSourcesServersSettings() {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launch()
-        let categories = app.buttons["library.categories"]
-        XCTAssertTrue(categories.waitForExistence(timeout: 20))
+        let sections = app.buttons["app.sections"]
+        XCTAssertTrue(sections.waitForExistence(timeout: 20))
+        XCTAssertTrue(sections.label.contains("媒体库"))
 
-        // 文件源 / 服务器 / 设置收进左侧下拉
-        categories.tap()
+        // 下拉包含 媒体库 / 偏好 / 文件源 / 服务器 / 设置
+        sections.tap()
         let menuShot = XCTAttachment(screenshot: app.screenshot())
         menuShot.name = "iPad 顶栏下拉菜单"
         menuShot.lifetime = .keepAlways
         add(menuShot)
         app.buttons["文件源"].firstMatch.tap()
-        let sections = app.buttons["app.sections"]
         XCTAssertTrue(sections.waitForExistence(timeout: 5))
         XCTAssertTrue(sections.label.contains("文件源"))
         let sourcesShot = XCTAttachment(screenshot: app.screenshot())
@@ -104,9 +107,15 @@ final class LibraryNavigationTests: XCTestCase {
         add(settingsShot)
 
         sections.tap()
-        app.buttons["媒体库"].firstMatch.tap()
-        XCTAssertTrue(categories.waitForExistence(timeout: 5))
-        XCTAssertTrue(categories.label.contains("媒体库"))
-    }
+        app.buttons["偏好"].firstMatch.tap()
+        XCTAssertTrue(sections.waitForExistence(timeout: 5))
+        XCTAssertTrue(sections.label.contains("偏好"))
+        XCTAssertTrue(app.buttons["preferences.quick.类型"].waitForExistence(timeout: 5))
 
+        sections.tap()
+        app.buttons["媒体库"].firstMatch.tap()
+        XCTAssertTrue(sections.waitForExistence(timeout: 5))
+        XCTAssertTrue(sections.label.contains("媒体库"))
+        XCTAssertTrue(app.buttons["library.quick.电影"].waitForExistence(timeout: 5))
+    }
 }

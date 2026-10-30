@@ -255,15 +255,16 @@ private struct SidebarGroupHeader: View {
 
 // MARK: - 根视图
 
-/// iPad 顶栏的四个一级栏目。iPad 上不再使用系统 TabView 顶部分段，而是收进一个下拉菜单。
+/// iPad 顶栏的一级栏目。iPad 上不再使用系统 TabView 顶部分段，而是收进一个下拉菜单。
 enum RootSection: String, CaseIterable, Identifiable, Hashable {
-    case library, sources, servers, settings
+    case library, preferences, sources, servers, settings
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .library: return "媒体库"
+        case .preferences: return "偏好"
         case .sources: return "文件源"
         case .servers: return "服务器"
         case .settings: return "设置"
@@ -273,6 +274,7 @@ enum RootSection: String, CaseIterable, Identifiable, Hashable {
     var symbol: String {
         switch self {
         case .library: return "play.rectangle.fill"
+        case .preferences: return "slider.horizontal.3"
         case .sources: return "folder.fill"
         case .servers: return "server.rack"
         case .settings: return "gearshape.fill"
@@ -296,7 +298,8 @@ enum DeviceInfo {
 }
 
 #if os(iOS)
-/// iPad 顶栏的一级栏目下拉：媒体库 / 文件源 / 服务器 / 设置
+/// iPad 顶栏的一级栏目下拉：媒体库 / 偏好 / 文件源 / 服务器 / 设置。
+/// 外观参考分段控件：外层是半透明圆角容器，当前栏目用内嵌胶囊高亮。
 struct SectionMenu: View {
     @EnvironmentObject private var router: AppSectionRouter
 
@@ -311,18 +314,26 @@ struct SectionMenu: View {
                 }
             }
         } label: {
-            HStack(spacing: 6) {
-                Text(router.section.title).font(.headline)
-                Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+            HStack(spacing: 4) {
+                Text(router.section.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 15)
+                    .frame(height: 30)
+                    .background(Color.primary.opacity(0.12), in: Capsule())
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 10)
             }
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 12)
-            .frame(height: 34)
+            .padding(3)
             .background(.regularMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))
+            .overlay(Capsule().strokeBorder(.primary.opacity(0.10)))
             .contentShape(Capsule())
         }
+        .tint(Color.primary)
         .accessibilityLabel("一级栏目：\(router.section.title)")
+        .accessibilityHint("切换媒体库、偏好、文件源、服务器和设置")
         .accessibilityIdentifier("app.sections")
     }
 }
@@ -500,6 +511,8 @@ struct RootView: View {
         switch router.section {
         case .library:
             BrowseTab(destination: .home)
+        case .preferences:
+            PreferencesTab()
         case .sources:
             NavigationStack {
                 SourceGroupView(isServer: false)
@@ -960,7 +973,7 @@ private struct SourceSidebarRow: View {
 }
 
 
-/// 每个 tab 自己的导航栈：显式 path，点卡片直接 append
+/// 媒体库：首页 + 三个顶栏快捷入口（继续观看 / 电影 / 电视剧）
 #if os(iOS)
 struct BrowseTab: View {
     let destination: BrowseDestination
@@ -968,14 +981,14 @@ struct BrowseTab: View {
     @EnvironmentObject private var router: AppSectionRouter
     @State private var selection: BrowseDestination = .home
 
+    /// iPhone 仍用旧的分类菜单；iPad 的栏目切换统一走 SectionMenu。
     private let destinations: [BrowseDestination] = [
         .home, .movies, .series, .recentlyAdded, .continueWatching,
         .genres, .years, .ratings, .certifications, .favorites
     ]
 
-    /// iPad 顶栏快捷入口：年代 / 类型 / 评分 / 分级 / 最近添加
     private let quickDestinations: [BrowseDestination] = [
-        .years, .genres, .ratings, .certifications, .recentlyAdded
+        .continueWatching, .movies, .series
     ]
     private var showsTopActions: Bool { DeviceInfo.isPad && nav.path.isEmpty }
 
@@ -984,13 +997,25 @@ struct BrowseTab: View {
         selection = destination
     }
 
+    /// 只有 iPad 根页面显示顶栏搜索；push 出去后隐藏，iPhone 用页面内搜索框
+    private var topSearch: (() -> Void)? {
+        guard DeviceInfo.isPad, nav.path.isEmpty else { return nil }
+        return { nav.open(BrowseRoute.list(.search)) }
+    }
+
     @ViewBuilder private var content: some View {
         switch selection {
-        case .years: LibraryCategoryView(kind: .years)
-        case .genres: LibraryCategoryView(kind: .genres)
-        case .ratings: LibraryCategoryView(kind: .ratings)
-        case .certifications: LibraryCategoryView(kind: .certifications)
-        default: BrowseView(destination: selection, onOpenDestination: select)
+        case .years:
+            LibraryCategoryView(kind: .years, onSearch: topSearch, searchIdentifier: "library.search")
+        case .genres:
+            LibraryCategoryView(kind: .genres, onSearch: topSearch, searchIdentifier: "library.search")
+        case .ratings:
+            LibraryCategoryView(kind: .ratings, onSearch: topSearch, searchIdentifier: "library.search")
+        case .certifications:
+            LibraryCategoryView(kind: .certifications, onSearch: topSearch, searchIdentifier: "library.search")
+        default:
+            BrowseView(destination: selection, onOpenDestination: select,
+                       onSearch: topSearch, searchIdentifier: "library.search")
         }
     }
 
@@ -1000,35 +1025,30 @@ struct BrowseTab: View {
                 .detailDestinations()
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Menu {
-                            // iPad：文件源 / 服务器 / 设置收进同一个下拉菜单
-                            if DeviceInfo.isPad {
-                                ForEach([RootSection.sources, .servers, .settings]) { section in
-                                    Button { router.section = section } label: {
-                                        Label(section.title, systemImage: section.symbol)
+                        if DeviceInfo.isPad {
+                            SectionMenu()
+                        } else {
+                            Menu {
+                                ForEach(destinations, id: \.self) { destination in
+                                    Button { select(destination) } label: {
+                                        Label(destination.title, systemImage: selection == destination ? "checkmark" : destination.symbol)
                                     }
                                 }
-                                Divider()
-                            }
-                            ForEach(destinations, id: \.self) { destination in
-                                Button { select(destination) } label: {
-                                    Label(destination.title, systemImage: selection == destination ? "checkmark" : destination.symbol)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(selection.title).font(.headline)
+                                    Image(systemName: "chevron.down").font(.caption.weight(.semibold))
                                 }
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 12)
+                                .frame(height: 34)
+                                .background(.regularMaterial, in: Capsule())
+                                .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))
+                                .contentShape(Capsule())
                             }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text(selection.title).font(.headline)
-                                Image(systemName: "chevron.down").font(.caption.weight(.semibold))
-                            }
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 12)
-                            .frame(height: 34)
-                            .background(.regularMaterial, in: Capsule())
-                            .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))
-                            .contentShape(Capsule())
+                            .accessibilityLabel("媒体库分类：\(selection.title)")
+                            .accessibilityIdentifier("library.categories")
                         }
-                        .accessibilityLabel("媒体库分类：\(selection.title)")
-                        .accessibilityIdentifier("library.categories")
                     }
 
                     if showsTopActions {
@@ -1046,25 +1066,78 @@ struct BrowseTab: View {
                                 }
                             }
                         }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button { nav.open(BrowseRoute.list(.search)) } label: {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(.primary)
-                                    .frame(width: 34, height: 34)
-                                    .background(.regularMaterial, in: Circle())
-                                    .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
-                                    .contentShape(Circle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("搜索")
-                            .accessibilityIdentifier("library.search")
-                        }
                     }
                 }
         }
         .onAppear { if selection == .home { selection = destination } }
         .environmentObject(nav)   // 挂在栈外面，push 出来的页面也能拿到
+    }
+}
+
+/// 偏好：默认展示全部影视，顶栏是类型 / 年代 / 评分 / 分级 / 收藏夹
+struct PreferencesTab: View {
+    @StateObject private var nav = NavModel()
+    @EnvironmentObject private var router: AppSectionRouter
+    @State private var selection: BrowseDestination = .allMedia
+
+    private let quickDestinations: [BrowseDestination] = [
+        .genres, .years, .ratings, .certifications, .favorites
+    ]
+    private var showsTopActions: Bool { DeviceInfo.isPad && nav.path.isEmpty }
+
+    private func select(_ destination: BrowseDestination) {
+        nav.path = NavigationPath()
+        selection = destination
+    }
+
+    private var topSearch: (() -> Void)? {
+        guard nav.path.isEmpty else { return nil }
+        return { nav.open(BrowseRoute.list(.search)) }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch selection {
+        case .genres:
+            LibraryCategoryView(kind: .genres, onSearch: topSearch, searchIdentifier: "preferences.search")
+        case .years:
+            LibraryCategoryView(kind: .years, onSearch: topSearch, searchIdentifier: "preferences.search")
+        case .ratings:
+            LibraryCategoryView(kind: .ratings, onSearch: topSearch, searchIdentifier: "preferences.search")
+        case .certifications:
+            LibraryCategoryView(kind: .certifications, onSearch: topSearch, searchIdentifier: "preferences.search")
+        default:
+            BrowseView(destination: selection, onOpenDestination: select,
+                       onSearch: topSearch, searchIdentifier: "preferences.search")
+        }
+    }
+
+    var body: some View {
+        NavigationStack(path: $nav.path) {
+            content
+                .detailDestinations()
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        SectionMenu()
+                    }
+                    if showsTopActions {
+                        ToolbarItem(placement: .principal) {
+                            HStack(spacing: 8) {
+                                ForEach(quickDestinations, id: \.self) { destination in
+                                    Button { select(destination) } label: {
+                                        BrowseControlLabel(title: destination.title,
+                                                           symbol: destination.symbol,
+                                                           selected: selection == destination)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(destination.title)
+                                    .accessibilityIdentifier("preferences.quick.\(destination.title)")
+                                }
+                            }
+                        }
+                    }
+                }
+        }
+        .environmentObject(nav)
     }
 }
 #endif

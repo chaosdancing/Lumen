@@ -193,6 +193,9 @@ struct BrowseView: View {
     var category: LibraryQuery.Category? = nil
     /// 点「全部」时切到对应模块（由 RootView 传进来，因为切换的是侧边栏选中项）
     var onOpenDestination: ((BrowseDestination) -> Void)? = nil
+    /// iPad 顶栏搜索入口：nil 时不显示（iPhone 用页面内搜索框）
+    var onSearch: (() -> Void)? = nil
+    var searchIdentifier = "library.search"
 
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerPresenter
@@ -373,52 +376,105 @@ struct BrowseView: View {
                     .help("搜索媒体库")
                 }
             }
-            #else
-            // iOS 首页的搜索入口已经做成页面里的搜索框（更显眼），工具栏不再重复放一个
-            #endif
             if destination != .home && destination != .search {
                 ToolbarItem(placement: .primaryAction) {
+                    HStack(spacing: 8) { sortControls }
+                        .buttonStyle(.plain)
+                }
+            }
+            #else
+            // iPad 把排序/筛选/网格和搜索放进同一个 trailing HStack，
+            // 搜索固定在最后，保证始终在最右上角。
+            if onSearch != nil || (destination != .home && destination != .search) {
+                ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 8) {
-                        Menu {
-                            ForEach(SortOption.allCases) { option in
-                                Button {
-                                    sort = option
-                                } label: {
-                                    Label(option.label, systemImage: sort == option ? "checkmark" : "arrow.up.arrow.down")
-                                }
+                        if destination != .home && destination != .search {
+                            if DeviceInfo.isPad {
+                                optionsMenu
+                            } else {
+                                sortControls
                             }
-                        } label: {
-                            BrowseControlLabel(title: sort.label, symbol: "arrow.up.arrow.down")
                         }
-                        .help("排序：\(sort.label)")
-
-                        Menu {
-                            ForEach(LibraryFilter.allCases) { option in
-                                Button {
-                                    filter = option
-                                } label: {
-                                    Label(option.title, systemImage: filter == option ? "checkmark" : "line.3.horizontal.decrease")
-                                }
-                            }
-                        } label: {
-                            BrowseControlLabel(title: filter.title, symbol: "line.3.horizontal.decrease")
+                        if let onSearch {
+                            SearchToolbarButton(action: onSearch, identifier: searchIdentifier)
                         }
-                        .help("筛选：\(filter.title)")
-
-                        Button {
-                            withAnimation(.smooth(duration: 0.2)) { listMode.toggle() }
-                        } label: {
-                            BrowseControlLabel(title: listMode ? "列表" : "网格",
-                                               symbol: listMode ? "list.bullet" : "square.grid.2x2")
-                        }
-                        .help(listMode ? "切换为网格" : "切换为列表")
                     }
                     .buttonStyle(.plain)
                 }
             }
+            #endif
         }
         .animation(.smooth(duration: 0.25), value: filter)
         .animation(.smooth(duration: 0.25), value: sort)
+    }
+
+    @ViewBuilder private var sortControls: some View {
+        Menu {
+            ForEach(SortOption.allCases) { option in
+                Button {
+                    sort = option
+                } label: {
+                    Label(option.label, systemImage: sort == option ? "checkmark" : "arrow.up.arrow.down")
+                }
+            }
+        } label: {
+            BrowseControlLabel(title: sort.label, symbol: "arrow.up.arrow.down")
+        }
+        .help("排序：\(sort.label)")
+
+        Menu {
+            ForEach(LibraryFilter.allCases) { option in
+                Button {
+                    filter = option
+                } label: {
+                    Label(option.title, systemImage: filter == option ? "checkmark" : "line.3.horizontal.decrease")
+                }
+            }
+        } label: {
+            BrowseControlLabel(title: filter.title, symbol: "line.3.horizontal.decrease")
+        }
+        .help("筛选：\(filter.title)")
+
+        Button {
+            withAnimation(.smooth(duration: 0.2)) { listMode.toggle() }
+        } label: {
+            BrowseControlLabel(title: listMode ? "列表" : "网格",
+                               symbol: listMode ? "list.bullet" : "square.grid.2x2")
+        }
+        .help(listMode ? "切换为网格" : "切换为列表")
+    }
+
+    /// iPad 顶栏空间有限：把排序、筛选、网格/列表收进一个圆形菜单，给分类胶囊留位置。
+    private var optionsMenu: some View {
+        Menu {
+            Picker("排序", selection: $sort) {
+                ForEach(SortOption.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            Picker("筛选", selection: $filter) {
+                ForEach(LibraryFilter.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            Divider()
+            Button {
+                withAnimation(.smooth(duration: 0.2)) { listMode.toggle() }
+            } label: {
+                Label(listMode ? "切换为网格" : "切换为列表",
+                      systemImage: listMode ? "square.grid.2x2" : "list.bullet")
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 34, height: 34)
+                .background(.regularMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
+                .contentShape(Circle())
+        }
+        .accessibilityLabel("筛选与排序")
+        .accessibilityIdentifier("browse.options")
     }
 
     // MARK: 媒体库首页（大图轮播 + 三行分区）

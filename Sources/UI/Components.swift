@@ -199,6 +199,29 @@ struct CachedRemoteImage<Placeholder: View>: View {
     }
 }
 
+#if os(iOS)
+/// 顶栏右上角的搜索按钮：material 圆形底，保证在深浅头图上都清晰。
+struct SearchToolbarButton: View {
+    let action: () -> Void
+    var identifier = "library.search"
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 34, height: 34)
+                .background(.regularMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(.primary.opacity(0.12)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("搜索")
+        .accessibilityIdentifier(identifier)
+    }
+}
+#endif
+
 // MARK: - 海报单元（无边框、标题在下方 —— 对齐 VidHub 的网格观感）
 
 struct PosterTile: View {
