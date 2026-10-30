@@ -1053,18 +1053,10 @@ struct BrowseTab: View {
 
                     if showsTopActions {
                         ToolbarItem(placement: .principal) {
-                            HStack(spacing: 8) {
-                                ForEach(quickDestinations, id: \.self) { destination in
-                                    Button { select(destination) } label: {
-                                        BrowseControlLabel(title: destination.title,
-                                                           symbol: destination.symbol,
-                                                           selected: selection == destination)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel(destination.title)
-                                    .accessibilityIdentifier("library.quick.\(destination.title)")
-                                }
-                            }
+                            BrowseSegmentedControl(destinations: quickDestinations,
+                                                   selection: selection,
+                                                   identifierPrefix: "library.quick",
+                                                   onSelect: select)
                         }
                     }
                 }
@@ -1078,7 +1070,7 @@ struct BrowseTab: View {
 struct PreferencesTab: View {
     @StateObject private var nav = NavModel()
     @EnvironmentObject private var router: AppSectionRouter
-    @State private var selection: BrowseDestination = .allMedia
+    @State private var selection: BrowseDestination = .genres
 
     private let quickDestinations: [BrowseDestination] = [
         .genres, .years, .ratings, .certifications, .favorites
@@ -1121,18 +1113,10 @@ struct PreferencesTab: View {
                     }
                     if showsTopActions {
                         ToolbarItem(placement: .principal) {
-                            HStack(spacing: 8) {
-                                ForEach(quickDestinations, id: \.self) { destination in
-                                    Button { select(destination) } label: {
-                                        BrowseControlLabel(title: destination.title,
-                                                           symbol: destination.symbol,
-                                                           selected: selection == destination)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel(destination.title)
-                                    .accessibilityIdentifier("preferences.quick.\(destination.title)")
-                                }
-                            }
+                            BrowseSegmentedControl(destinations: quickDestinations,
+                                                   selection: selection,
+                                                   identifierPrefix: "preferences.quick",
+                                                   onSelect: select)
                         }
                     }
                 }

@@ -200,6 +200,50 @@ struct CachedRemoteImage<Placeholder: View>: View {
 }
 
 #if os(iOS)
+/// 顶栏的连体分段控件：一个 material 胶囊里排布按钮，选中块用 matchedGeometryEffect 滑动。
+struct BrowseSegmentedControl: View {
+    let destinations: [BrowseDestination]
+    let selection: BrowseDestination?
+    let identifierPrefix: String
+    let onSelect: (BrowseDestination) -> Void
+
+    @Namespace private var selectionNS
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(destinations, id: \.self) { destination in
+                let selected = selection == destination
+                Button {
+                    withAnimation(.smooth(duration: 0.28)) { onSelect(destination) }
+                } label: {
+                    Text(destination.title)
+                        .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 13)
+                        .frame(height: 32)
+                        .background {
+                            if selected {
+                                Capsule()
+                                    .fill(Color.primary.opacity(0.12))
+                                    .matchedGeometryEffect(id: "segmented.selection", in: selectionNS)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(destination.title)
+                .accessibilityIdentifier("\(identifierPrefix).\(destination.title)")
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.primary.opacity(0.10)))
+        .animation(.smooth(duration: 0.28), value: selection)
+    }
+}
+
 /// 顶栏右上角的搜索按钮：material 圆形底，保证在深浅头图上都清晰。
 struct SearchToolbarButton: View {
     let action: () -> Void
