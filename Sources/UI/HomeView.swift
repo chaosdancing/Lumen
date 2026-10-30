@@ -237,8 +237,14 @@ struct BrowseView: View {
     private var heroHeight: CGFloat {
         #if os(macOS)
         return min(max(viewport.height * 0.68, 380), 760)
-        #else
+        #elseif os(iOS)
+        if DeviceInfo.isPad {
+            // iPad 头图更高，下缘在影片区背后继续淡出
+            return min(max(viewport.height * 0.56, 440), 680)
+        }
         return min(max(viewport.height * 0.46, 280), 520)
+        #else
+        return min(max(viewport.height * 0.68, 380), 760)
         #endif
     }
 
@@ -463,6 +469,12 @@ struct BrowseView: View {
             .padding(.top, 24)
         }
         .padding(.bottom, 24)
+        .background(alignment: .top) {
+            // 头图在下方继续延展：同一张剧照虚化后铺到影片区背后，再淡出到页面底色。
+            if DeviceInfo.isPad, prefs.showCarousel, let item = heroItem ?? entries.first?.posterItem {
+                HomeArtworkExtension(item: item, scheme: colorScheme, heroHeight: heroHeight)
+            }
+        }
     }
 
     /// 首页搜索入口：点一下进搜索页并自动聚焦输入框（和 macOS 的 ⌘F 同一条路径）
@@ -743,6 +755,41 @@ struct BrowseView: View {
 
 // MARK: - 列表行
 
+
+/// 头图下方的背景延展：同一张剧照虚化后继续铺开，在影片区下方淡出。
+private struct HomeArtworkExtension: View {
+    let item: MediaItem
+    var scheme: ColorScheme
+    var heroHeight: CGFloat
+
+    private var wash: Color { scheme == .dark ? .black : .white }
+    private var washOpacity: Double { scheme == .dark ? 0.42 : 0.55 }
+    private var totalHeight: CGFloat { heroHeight + 500 }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ArtworkView(item: item, cornerRadius: 0, variant: .backdrop)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+                .blur(radius: 34, opaque: false)
+                .overlay(wash.opacity(washOpacity))
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0.0),
+                            .init(color: .clear, location: max(0.0, heroHeight / totalHeight - 0.07)),
+                            .init(color: .black.opacity(0.90), location: heroHeight / totalHeight + 0.10),
+                            .init(color: .black.opacity(0.48), location: 0.86),
+                            .init(color: .clear, location: 1.0)
+                        ],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                }
+        }
+        .frame(height: totalHeight)
+        .allowsHitTesting(false)
+    }
+}
 
 private struct HomeBrowseBackdrop: View {
     let shows: Bool
