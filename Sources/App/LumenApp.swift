@@ -316,21 +316,14 @@ enum DeviceInfo {
 
 #if os(iOS)
 /// iPad 顶栏的一级栏目下拉：媒体库 / 偏好 / 文件源 / 服务器 / 设置。
-/// 外观参考分段控件：外层是半透明圆角容器，当前栏目用内嵌胶囊高亮。
+/// 用自定义 popover 而不是系统 Menu，才能把选中勾放到行的最右侧。
 struct SectionMenu: View {
     @EnvironmentObject private var router: AppSectionRouter
+    @State private var showing = false
 
     var body: some View {
-        Menu {
-            ForEach(RootSection.allCases) { section in
-                Button {
-                    router.select(section)
-                } label: {
-                    // emoji 直接写进文字，避免系统菜单的图标列把 emoji 和选项拉开。
-                    Text("\(router.section == section ? "✓ " : "")\(section.emoji)  \(section.title)")
-                }
-                .accessibilityLabel(section.title)
-            }
+        Button {
+            showing.toggle()
         } label: {
             HStack(spacing: 4) {
                 Text("\(router.section.emoji) \(router.section.title)")
@@ -343,16 +336,49 @@ struct SectionMenu: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.secondary)
                     .padding(.trailing, 11)
+                    .rotationEffect(.degrees(showing ? 180 : 0))
             }
             .padding(4)
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(.primary.opacity(0.10)))
             .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
         .tint(Color.primary)
         .accessibilityLabel("一级栏目：\(router.section.title)")
         .accessibilityHint("切换媒体库、偏好、文件源、服务器和设置")
         .accessibilityIdentifier("app.sections")
+        .popover(isPresented: $showing, arrowEdge: .top) {
+            VStack(spacing: 0) {
+                ForEach(RootSection.allCases) { section in
+                    Button {
+                        router.select(section)
+                        showing = false
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("\(section.emoji)  \(section.title)")
+                                .font(.system(size: 16))
+                                .foregroundStyle(.primary)
+                            Spacer(minLength: 24)
+                            if router.section == section {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .frame(height: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(section.title)
+                }
+            }
+            .frame(width: 232)
+            .padding(.vertical, 6)
+            .background(.regularMaterial)
+            .presentationCompactAdaptation(.popover)
+        }
     }
 }
 

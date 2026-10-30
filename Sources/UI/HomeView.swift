@@ -243,7 +243,7 @@ struct BrowseView: View {
         #elseif os(iOS)
         if DeviceInfo.isPad {
             // iPad 头图更高，下缘在影片区背后继续淡出
-            return min(max(viewport.height * 0.56, 440), 680)
+            return min(max(viewport.height * 0.66, 520), 820)
         }
         return min(max(viewport.height * 0.46, 280), 520)
         #else

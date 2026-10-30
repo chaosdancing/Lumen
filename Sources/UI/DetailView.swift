@@ -143,8 +143,8 @@ struct MediaDetailView: View {
         #if os(macOS)
         return min(max(size.height * 0.80, 460), 860)
         #else
-        let h = min(size.height * 0.56, size.width * 1.02)
-        return min(max(h, 320), 660)
+        let h = min(size.height * 0.66, size.width * 1.02)
+        return min(max(h, 360), 760)
         #endif
     }
 

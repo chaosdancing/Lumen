@@ -127,4 +127,22 @@ final class LibraryNavigationTests: XCTestCase {
         XCTAssertTrue(sections.label.contains("媒体库"))
         XCTAssertTrue(app.buttons["library.quick.电影"].waitForExistence(timeout: 5))
     }
+    func testMovieDetailHero() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let movies = app.buttons["library.quick.电影"]
+        XCTAssertTrue(movies.waitForExistence(timeout: 20))
+        movies.tap()
+        let poster = app.buttons.matching(NSPredicate(format: "label CONTAINS ','")).firstMatch
+        try XCTSkipUnless(poster.waitForExistence(timeout: 10), "媒体库为空，跳过详情页截图")
+        poster.tap()
+        sleep(2)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "iPad 电影详情"
+        shot.lifetime = .keepAlways
+        add(shot)
+        XCTAssertTrue(app.buttons["播放"].firstMatch.exists)
+    }
+
 }
