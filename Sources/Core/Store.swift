@@ -279,14 +279,6 @@ final class AppStore: ObservableObject {
         persist()
     }
 
-    private func persistCredential(for config: MediaSourceConfig) {
-        if config.password.isEmpty {
-            Credentials.delete(config.id)
-        } else {
-            Credentials.set(config.password, for: config.id)
-        }
-    }
-
     private func invalidateScan(for sourceID: UUID) {
         scanGenerations[sourceID] = UUID()
         scanState[sourceID] = nil

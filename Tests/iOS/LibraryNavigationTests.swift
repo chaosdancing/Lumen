@@ -37,7 +37,18 @@ final class LibraryNavigationTests: XCTestCase {
         app.launch()
         let categories = app.buttons["library.categories"]
         XCTAssertTrue(categories.waitForExistence(timeout: 20))
-        for title in ["年代", "评分", "分级", "类型", "电影", "电视剧", "媒体库"] {
+
+        // iPad 顶栏快捷入口：年代 / 评分 / 分级 / 类型
+        for title in ["年代", "评分", "分级", "类型"] {
+            let chip = app.buttons["library.quick.\(title)"]
+            XCTAssertTrue(chip.waitForExistence(timeout: 5), title)
+            chip.tap()
+            XCTAssertTrue(categories.waitForExistence(timeout: 5))
+            XCTAssertTrue(categories.label.contains(title))
+        }
+
+        // 分类菜单仍保留电影 / 电视剧 / 媒体库等入口
+        for title in ["电影", "电视剧", "媒体库"] {
             categories.tap()
             let choice = app.buttons[title].firstMatch
             XCTAssertTrue(choice.waitForExistence(timeout: 5), title)
@@ -45,7 +56,8 @@ final class LibraryNavigationTests: XCTestCase {
             XCTAssertTrue(categories.waitForExistence(timeout: 5))
             XCTAssertTrue(categories.label.contains(title))
         }
-        let search = app.buttons["搜索"].firstMatch
+
+        let search = app.buttons["library.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
         let field = app.textFields["搜索媒体库"]
@@ -59,4 +71,42 @@ final class LibraryNavigationTests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
     }
+
+    func testPadSectionMenuConsolidatesSourcesServersSettings() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let categories = app.buttons["library.categories"]
+        XCTAssertTrue(categories.waitForExistence(timeout: 20))
+
+        // 文件源 / 服务器 / 设置收进左侧下拉
+        categories.tap()
+        let menuShot = XCTAttachment(screenshot: app.screenshot())
+        menuShot.name = "iPad 顶栏下拉菜单"
+        menuShot.lifetime = .keepAlways
+        add(menuShot)
+        app.buttons["文件源"].firstMatch.tap()
+        let sections = app.buttons["app.sections"]
+        XCTAssertTrue(sections.waitForExistence(timeout: 5))
+        XCTAssertTrue(sections.label.contains("文件源"))
+        let sourcesShot = XCTAttachment(screenshot: app.screenshot())
+        sourcesShot.name = "iPad 文件源"
+        sourcesShot.lifetime = .keepAlways
+        add(sourcesShot)
+
+        sections.tap()
+        app.buttons["设置"].firstMatch.tap()
+        XCTAssertTrue(sections.waitForExistence(timeout: 5))
+        XCTAssertTrue(sections.label.contains("设置"))
+        let settingsShot = XCTAttachment(screenshot: app.screenshot())
+        settingsShot.name = "iPad 设置"
+        settingsShot.lifetime = .keepAlways
+        add(settingsShot)
+
+        sections.tap()
+        app.buttons["媒体库"].firstMatch.tap()
+        XCTAssertTrue(categories.waitForExistence(timeout: 5))
+        XCTAssertTrue(categories.label.contains("媒体库"))
+    }
+
 }

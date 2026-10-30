@@ -167,18 +167,22 @@ struct TileTap<Label: View>: View {
 
 // MARK: - 浏览页
 
-private struct BrowseControlLabel: View {
+struct BrowseControlLabel: View {
     let title: String
     let symbol: String
+    var selected = false
 
     var body: some View {
         Label(title, systemImage: symbol)
-            .font(.system(size: 13, weight: .medium))
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 13, weight: selected ? .semibold : .medium))
             .lineLimit(1)
             .padding(.horizontal, 12)
             .frame(height: 34)
-            .background(.regularMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))
+            .background(selected ? AnyShapeStyle(Color.accentColor.opacity(0.16))
+                                 : AnyShapeStyle(.regularMaterial), in: Capsule())
+            .overlay(Capsule().strokeBorder(selected ? Color.accentColor.opacity(0.5)
+                                                     : Color.primary.opacity(0.12)))
             .contentShape(Capsule())
     }
 }
@@ -430,12 +434,15 @@ struct BrowseView: View {
                 HeroCarousel(entries: [first], height: heroHeight, currentItem: $heroItem)
             }
 
-            searchEntry
-                .padding(.horizontal, 22)
-                .padding(.top, 18)
+            // iPad 把搜索与分类快捷入口移到顶栏；iPhone / macOS 仍放在首页内容里。
+            if !DeviceInfo.isPad {
+                searchEntry
+                    .padding(.horizontal, 22)
+                    .padding(.top, 18)
 
-            quickLinks
-                .padding(.top, 14)
+                quickLinks
+                    .padding(.top, 14)
+            }
 
             VStack(alignment: .leading, spacing: 26) {
                 if !continueItems.isEmpty {

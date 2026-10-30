@@ -255,6 +255,89 @@ private struct SidebarGroupHeader: View {
 
 // MARK: - 根视图
 
+/// iPad 顶栏的四个一级栏目。iPad 上不再使用系统 TabView 顶部分段，而是收进一个下拉菜单。
+enum RootSection: String, CaseIterable, Identifiable, Hashable {
+    case library, sources, servers, settings
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .library: return "媒体库"
+        case .sources: return "文件源"
+        case .servers: return "服务器"
+        case .settings: return "设置"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .library: return "play.rectangle.fill"
+        case .sources: return "folder.fill"
+        case .servers: return "server.rack"
+        case .settings: return "gearshape.fill"
+        }
+    }
+}
+
+@MainActor
+final class AppSectionRouter: ObservableObject {
+    @Published var section: RootSection = .library
+}
+
+enum DeviceInfo {
+    static var isPad: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        false
+        #endif
+    }
+}
+
+#if os(iOS)
+/// iPad 顶栏的一级栏目下拉：媒体库 / 文件源 / 服务器 / 设置
+struct SectionMenu: View {
+    @EnvironmentObject private var router: AppSectionRouter
+
+    var body: some View {
+        Menu {
+            ForEach(RootSection.allCases) { section in
+                Button {
+                    router.section = section
+                } label: {
+                    Label(section.title,
+                          systemImage: router.section == section ? "checkmark" : section.symbol)
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(router.section.title).font(.headline)
+                Image(systemName: "chevron.down").font(.caption.weight(.semibold))
+            }
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("一级栏目：\(router.section.title)")
+        .accessibilityIdentifier("app.sections")
+    }
+}
+
+private struct PadSectionToolbar: ViewModifier {
+    func body(content: Content) -> some View {
+        content.toolbar {
+            if DeviceInfo.isPad {
+                ToolbarItem(placement: .topBarLeading) { SectionMenu() }
+            }
+        }
+    }
+}
+
+private extension View {
+    func padSectionToolbar() -> some View { modifier(PadSectionToolbar()) }
+}
+
+#endif
+
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @State private var selection: BrowseDestination = .home
@@ -269,6 +352,7 @@ struct RootView: View {
     @State private var showAddSheet = false
     @State private var newSourcePreset: SourceKind = .webdav
     @ObservedObject private var prefs = Preferences.shared
+    @StateObject private var router = AppSectionRouter()
 
     var body: some View {
         // 外观跟着「设置 → 外观」走：这里必须由 RootView 自己带（它观察了 Preferences），
@@ -352,26 +436,38 @@ struct RootView: View {
         .onAppear { applyAppearance() }
         .onChange(of: prefs.appearance) { _, _ in applyAppearance() }
         #else
-        TabView {
-            BrowseTab(destination: .home)
-                .tabItem { Label("媒体库", systemImage: "play.rectangle.fill") }
+        Group {
+            // iPad：不再使用系统 TabView 的顶部分段，改为顶栏下拉 + 单一内容区。
+            if DeviceInfo.isPad {
+                padRoot
+            } else {
+                TabView(selection: $router.section) {
+                    BrowseTab(destination: .home)
+                        .tabItem { Label("媒体库", systemImage: "play.rectangle.fill") }
+                        .tag(RootSection.library)
 
-            NavigationStack {
-                SourceGroupView(isServer: false)
-            }
-            .tabItem { Label("文件源", systemImage: "folder.fill") }
+                    NavigationStack {
+                        SourceGroupView(isServer: false)
+                    }
+                    .tabItem { Label("文件源", systemImage: "folder.fill") }
+                    .tag(RootSection.sources)
 
-            NavigationStack {
-                SourceGroupView(isServer: true)
-            }
-            .tabItem { Label("服务器", systemImage: "server.rack") }
+                    NavigationStack {
+                        SourceGroupView(isServer: true)
+                    }
+                    .tabItem { Label("服务器", systemImage: "server.rack") }
+                    .tag(RootSection.servers)
 
-            NavigationStack {
-                SettingsView()
+                    NavigationStack {
+                        SettingsView()
+                    }
+                    .tabItem { Label("设置", systemImage: "gearshape.fill") }
+                    .tag(RootSection.settings)
+                }
             }
-            .tabItem { Label("设置", systemImage: "gearshape.fill") }
         }
         .environmentObject(player)
+        .environmentObject(router)
         .fullScreenCover(item: $player.item) { item in
             PlayerView(item: item)
                 .environmentObject(store)
@@ -392,6 +488,31 @@ struct RootView: View {
         }
         #endif
     }
+
+    #if os(iOS)
+    /// iPad 根视图：四个一级栏目共用一个内容区，栏目切换收进顶栏下拉菜单。
+    @ViewBuilder private var padRoot: some View {
+        switch router.section {
+        case .library:
+            BrowseTab(destination: .home)
+        case .sources:
+            NavigationStack {
+                SourceGroupView(isServer: false)
+                    .padSectionToolbar()
+            }
+        case .servers:
+            NavigationStack {
+                SourceGroupView(isServer: true)
+                    .padSectionToolbar()
+            }
+        case .settings:
+            NavigationStack {
+                SettingsView()
+                    .padSectionToolbar()
+            }
+        }
+    }
+    #endif
 
     // MARK: 侧边栏
 
@@ -839,12 +960,19 @@ private struct SourceSidebarRow: View {
 struct BrowseTab: View {
     let destination: BrowseDestination
     @StateObject private var nav = NavModel()
+    @EnvironmentObject private var router: AppSectionRouter
     @State private var selection: BrowseDestination = .home
 
     private let destinations: [BrowseDestination] = [
         .home, .movies, .series, .recentlyAdded, .continueWatching,
         .genres, .years, .ratings, .certifications, .favorites
     ]
+
+    /// iPad 顶栏快捷入口：年代 / 类型 / 评分 / 分级 / 最近添加
+    private let quickDestinations: [BrowseDestination] = [
+        .years, .genres, .ratings, .certifications, .recentlyAdded
+    ]
+    private var showsTopActions: Bool { DeviceInfo.isPad && nav.path.isEmpty }
 
     private func select(_ destination: BrowseDestination) {
         nav.path = NavigationPath()
@@ -868,6 +996,15 @@ struct BrowseTab: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Menu {
+                            // iPad：文件源 / 服务器 / 设置收进同一个下拉菜单
+                            if DeviceInfo.isPad {
+                                ForEach([RootSection.sources, .servers, .settings]) { section in
+                                    Button { router.section = section } label: {
+                                        Label(section.title, systemImage: section.symbol)
+                                    }
+                                }
+                                Divider()
+                            }
                             ForEach(destinations, id: \.self) { destination in
                                 Button { select(destination) } label: {
                                     Label(destination.title, systemImage: selection == destination ? "checkmark" : destination.symbol)
@@ -881,6 +1018,34 @@ struct BrowseTab: View {
                         }
                         .accessibilityLabel("媒体库分类：\(selection.title)")
                         .accessibilityIdentifier("library.categories")
+                    }
+
+                    if showsTopActions {
+                        ToolbarItem(placement: .principal) {
+                            HStack(spacing: 8) {
+                                ForEach(quickDestinations, id: \.self) { destination in
+                                    Button { select(destination) } label: {
+                                        BrowseControlLabel(title: destination.title,
+                                                           symbol: destination.symbol,
+                                                           selected: selection == destination)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel(destination.title)
+                                    .accessibilityIdentifier("library.quick.\(destination.title)")
+                                }
+                            }
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { nav.open(BrowseRoute.list(.search)) } label: {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .frame(width: 34, height: 34)
+                                    .contentShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("搜索")
+                            .accessibilityIdentifier("library.search")
+                        }
                     }
                 }
         }

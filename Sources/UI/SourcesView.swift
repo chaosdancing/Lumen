@@ -585,7 +585,7 @@ struct SourceGroupView: View {
             }
             .padding(26)
         }
-        .navigationTitle(isServer ? "影视服务器" : "文件源")
+        .navigationTitle(DeviceInfo.isPad ? "" : (isServer ? "影视服务器" : "文件源"))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
