@@ -849,10 +849,42 @@ final class AppStore: ObservableObject {
         guard let entries = try? await src.list(path: dir) else { return [] }
         return entries
             .filter { !$0.isDirectory }
-            .filter { ($0.name as NSString).deletingPathExtension == stem }
             .filter { SubtitleParser.format(for: $0.name) != nil }
+            .filter { Self.subtitleMatches($0.name, videoStem: stem) }
             .map(\.path)
-            .sorted()
+            .sorted {
+                let a = Self.subtitlePriority($0)
+                let b = Self.subtitlePriority($1)
+                return a == b ? $0.localizedStandardCompare($1) == .orderedAscending : a < b
+            }
+    }
+
+    /// 外挂字幕名允许在视频主文件名后带语言后缀：
+    /// `影片.chs.srt`、`影片.zh-CN.ass`、`影片.eng.forced.srt` 等。
+    private static func subtitleMatches(_ subtitleName: String, videoStem: String) -> Bool {
+        let subStem = (subtitleName as NSString).deletingPathExtension
+        let lhs = subStem.lowercased()
+        let rhs = videoStem.lowercased()
+        if lhs == rhs { return true }
+        for separator in [".", "_", "-", " "] where lhs.hasPrefix(rhs + separator) {
+            return true
+        }
+        return false
+    }
+
+    /// 同一条目的多条外挂字幕里优先简中，其次繁中、英文。
+    private static func subtitlePriority(_ path: String) -> Int {
+        let lower = path.lowercased()
+        if [".chs", ".zh-cn", ".zh_cn", ".zh.", ".chi", ".sc", ".简", ".中"].contains(where: lower.contains) {
+            return 0
+        }
+        if [".cht", ".zh-tw", ".zh_tw", ".tc", ".繁"].contains(where: lower.contains) {
+            return 1
+        }
+        if [".eng", ".en.", ".en_", ".english"].contains(where: lower.contains) {
+            return 2
+        }
+        return 3
     }
 
     func subtitleCues(for item: MediaItem, path: String) async -> [SubtitleCue] {
