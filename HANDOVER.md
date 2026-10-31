@@ -1,5 +1,17 @@
 # Lumen 交接文档
 
+## iPad 首页过渡分支（2026-10-31）
+
+- 分支：`codex/ipad-home-transition`，基于 `main`；尚未合并。
+- 仅 iPad 媒体库首页启用沉浸式深色背景，头图渐隐起点改为 0.68；影片区向上叠入 100pt，播放信息底部留白至少 132pt。
+- 首页磨砂层用固定 200pt 渐入、100pt 渐出，避免随内容长度改变过渡宽度。
+- 首页背景保留旧图直到新图加载完成，再做 0.4 秒交叉淡入；分页仍使用原有滑动交互，尚未实现逐帧跟随拖动进度。
+- 修改位置：`Sources/UI/HomeView.swift`、`Sources/UI/Components.swift`。macOS 和 iPhone 保留原有参数；共享图片组件默认不启用新切换行为。
+- 验证：iOS Simulator 构建、macOS 签名构建通过；iPad Pro 13-inch (M5) 的 `LibraryNavigationTests` 4 项全部通过（含轮播与旋转），无跳过项。
+- 模拟器使用已有演示图片；真实影片图片及真机尚未验证。本次未安装真机。
+
+以下为 main 原交接记录。
+
 > 更新时间：2026-10-31  
 > 分支：`main`（已推送，工作区干净）  
 > 最近提交：`eb4ddf6 macOS 去筛选箭头；iPad 顶栏去框、搜索收进更多、首页上移`  

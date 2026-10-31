@@ -273,6 +273,7 @@ struct BrowseView: View {
 
     private var heroInfoInset: CGFloat? {
         guard usesFrostedShelf else { return nil }
+        if usesImmersivePadHome { return max(132, heroHeight * 0.20) }
         #if os(macOS)
         return heroHeight * 0.18
         #else
@@ -281,7 +282,16 @@ struct BrowseView: View {
     }
 
     private var heroFadeStart: Double {
-        usesFrostedShelf ? 0.88 : 0.70
+        if usesImmersivePadHome { return 0.68 }
+        return usesFrostedShelf ? 0.88 : 0.70
+    }
+
+    private var usesImmersivePadHome: Bool {
+        #if os(iOS)
+        return DeviceInfo.isPad && destination == .home && prefs.showCarousel
+        #else
+        return false
+        #endif
     }
 
     var body: some View {
@@ -299,13 +309,16 @@ struct BrowseView: View {
         }
         .background(HomeBrowseBackdrop(shows: destination != .search && !entries.isEmpty,
                                        item: heroItem ?? entries.first?.posterItem,
-                                       scheme: colorScheme))
+                                       scheme: usesImmersivePadHome ? .dark : colorScheme,
+                                       crossfades: usesImmersivePadHome))
+        .environment(\.colorScheme, usesImmersivePadHome ? .dark : colorScheme)
         .measureViewport { viewport = $0 }
         #if os(iOS)
         .ignoresSafeArea(.container, edges: destination == .home && prefs.showCarousel && !entries.isEmpty ? .top : [])
         .navigationTitle(category?.title ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarColorScheme(usesImmersivePadHome ? .dark : nil, for: .navigationBar)
         .toolbarBackground(.hidden, for: .tabBar)
         #else
         .navigationTitle(category?.title ?? destination.title)
@@ -542,12 +555,13 @@ struct BrowseView: View {
                     row("电影", movies.prefix(12).map { BrowseEntry.movie($0) }, destination: .movies)
                 }
             }
-            .padding(.top, usesFrostedShelf ? 112 - shelfOverlap : 24)
+            .padding(.top, usesImmersivePadHome ? 32 : (usesFrostedShelf ? 112 - shelfOverlap : 24))
             .background {
                 if usesFrostedShelf {
-                    HomeShelfBackground()
+                    HomeShelfBackground(fadeHeight: usesImmersivePadHome ? 200 : nil)
                 }
             }
+            .padding(.top, usesImmersivePadHome && !entries.isEmpty ? -100 : 0)
         }
         .padding(.bottom, 24)
     }
@@ -893,11 +907,22 @@ struct BrowseView: View {
 
 /// 首页影片区背后的磨砂层：从透明渐入 material，把影片行“托”在头图背景上。
 private struct HomeShelfBackground: View {
+    var fadeHeight: CGFloat? = nil
+
     var body: some View {
         Rectangle()
             .fill(.ultraThinMaterial)
             .opacity(0.55)
             .mask {
+                if let fadeHeight {
+                    VStack(spacing: 0) {
+                        LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                            .frame(height: fadeHeight)
+                        Color.black
+                        LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                            .frame(height: 100)
+                    }
+                } else {
                 LinearGradient(
                     stops: [
                         .init(color: .clear, location: 0.0),
@@ -907,6 +932,7 @@ private struct HomeShelfBackground: View {
                     ],
                     startPoint: .top, endPoint: .bottom
                 )
+                }
             }
             .ignoresSafeArea(edges: .bottom)
     }
@@ -916,12 +942,13 @@ private struct HomeBrowseBackdrop: View {
     let shows: Bool
     let item: MediaItem?
     let scheme: ColorScheme
+    var crossfades = false
 
     var body: some View {
         Group {
             if shows {
                 // heroItem 由轮播回调设置，首帧可能还是 nil → 退回第一条，别让背景空着
-                BlurredBackdrop(item: item, scheme: scheme)
+                BlurredBackdrop(item: item, scheme: scheme, crossfades: crossfades)
             }
         }
     }

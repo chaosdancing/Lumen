@@ -18,12 +18,15 @@ struct ArtworkView: View {
     let item: MediaItem?
     var cornerRadius: CGFloat = 6
     var variant: ArtworkVariant = .poster
+    /// 首页背景保留已显示的图片，等下一张就绪后再交叉淡入。
+    var crossfades = false
 
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var artwork: ArtworkStore
     @ObservedObject private var metadata = MetadataStore.shared
     @ObservedObject private var preferences = Preferences.shared
     @State private var image: PlatformImage?
+    @State private var displayedIdentity = ""
     static var thumbLogCount = 0
 
     var body: some View {
@@ -32,6 +35,7 @@ struct ArtworkView: View {
             if let image {
                 // 横版位缺图时会退回竖版海报：直接铺满会把画面裁得只剩中间一条，
                 // 所以竖图改成「模糊底 + 完整居中」，大尺寸头图也不至于糊成一片
+                Group {
                 if variant == .backdrop, image.size.width < image.size.height {
                     ZStack {
                         Image(platformImage: image)
@@ -50,6 +54,9 @@ struct ArtworkView: View {
                         .scaledToFill()
                         .transition(.opacity)
                 }
+                }
+                .id(crossfades ? displayedIdentity : "artwork")
+                .transition(.opacity)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -59,13 +66,26 @@ struct ArtworkView: View {
             // 先查内存再清空，命中时不会先闪一下占位图
             if let hit = artwork.cached(for: item, variant: variant, in: store) {
                 guard !Task.isCancelled, identity == taskIdentity else { return }
-                image = hit
+                if crossfades {
+                    withAnimation(.easeInOut(duration: 0.4)) {
+                        image = hit
+                        displayedIdentity = identity
+                    }
+                } else { image = hit }
                 return
             }
-            image = nil
+            if !crossfades { image = nil }
             let loaded = await artwork.image(for: item, variant: variant, in: store)
             guard !Task.isCancelled, identity == taskIdentity else { return }
-            withAnimation(.easeOut(duration: 0.18)) { image = loaded }
+            if crossfades {
+                guard let loaded else { return }
+                withAnimation(.easeInOut(duration: 0.4)) {
+                    image = loaded
+                    displayedIdentity = identity
+                }
+            } else {
+                withAnimation(.easeOut(duration: 0.18)) { image = loaded }
+            }
         }
     }
 
@@ -464,6 +484,7 @@ struct BlurredBackdrop: View {
     let item: MediaItem?
     var scheme: ColorScheme = .dark
     var radius: CGFloat = 42
+    var crossfades = false
 
     private var isDark: Bool { scheme == .dark }
     /// 深色主题压黑，浅色主题压白 —— 正文用的是 .primary，两种主题下都得压得住
@@ -472,7 +493,7 @@ struct BlurredBackdrop: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ArtworkView(item: item, cornerRadius: 0, variant: .backdrop)
+            ArtworkView(item: item, cornerRadius: 0, variant: .backdrop, crossfades: crossfades)
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .clipped()
                 .blur(radius: radius, opaque: true)
