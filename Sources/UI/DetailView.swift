@@ -158,13 +158,17 @@ struct MediaDetailView: View {
 
     // MARK: 主体
 
-    var body: some View {
-        ZStack(alignment: .top) {
-            // 整页背景 = 同一张剧照的虚化版，头图淡出后直接接上，正文就浮在上面
-            pageBackground.ignoresSafeArea()
-            BlurredBackdrop(item: posterItem, scheme: colorScheme)
+    @ViewBuilder
+    private var detailScrollView: some View {
+        #if os(macOS)
+        MainScrollView { detailScrollContent }
+        #else
+        ScrollView { detailScrollContent }
+        #endif
+    }
 
-            ScrollView {
+    @ViewBuilder
+    private var detailScrollContent: some View {
                 VStack(alignment: .leading, spacing: 0) {
                     hero
                     sections
@@ -172,9 +176,18 @@ struct MediaDetailView: View {
                         .padding(.top, 26)
                         .padding(.bottom, 48)
                 }
-            }
-            .ignoresSafeArea(edges: .top)
-            .measureViewport { viewport = $0 }
+            
+    }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            // 整页背景 = 同一张剧照的虚化版，头图淡出后直接接上，正文就浮在上面
+            pageBackground.ignoresSafeArea()
+            BlurredBackdrop(item: posterItem, scheme: colorScheme)
+
+            detailScrollView
+                .ignoresSafeArea(edges: .top)
+                .measureViewport { viewport = $0 }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -189,6 +202,7 @@ struct MediaDetailView: View {
                 } label: {
                     Label("更多操作", systemImage: "ellipsis")
                 }
+                .menuIndicator(.hidden)
                 .disabled(actionRunning || posterItem == nil)
                 .help("更新元数据或重新扫描当前内容")
             }
@@ -568,7 +582,15 @@ struct MediaDetailView: View {
             }
         }
         .padding(12)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .background {
+            #if os(macOS)
+            // macOS 上选集区直接浮在模糊背景上，不要再加一层明显的灰色卡片底。
+            Color.clear
+            #else
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+            #endif
+        }
     }
 
     /// 季选择：横排胶囊可点，季数多时两侧出箭头

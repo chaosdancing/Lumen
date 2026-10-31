@@ -416,7 +416,6 @@ struct RootView: View {
     @State private var newSourcePreset: SourceKind = .webdav
     @ObservedObject private var prefs = Preferences.shared
     @StateObject private var router = AppSectionRouter()
-    @State private var sidebarVisible = true
 
     var body: some View {
         // 外观跟着「设置 → 外观」走：这里必须由 RootView 自己带（它观察了 Preferences），
@@ -458,32 +457,13 @@ struct RootView: View {
     @ViewBuilder
     private var platformContent: some View {
         #if os(macOS)
-        ZStack(alignment: .leading) {
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 210, ideal: 222, max: 260)
+        } detail: {
             NavigationStack(path: $navPath) {
                 content
                     .detailDestinations()
-                    .toolbar {
-                        ToolbarItem(placement: .navigation) {
-                            Button {
-                                withAnimation(.smooth(duration: 0.22)) { sidebarVisible.toggle() }
-                            } label: {
-                                Image(systemName: "sidebar.left")
-                            }
-                            .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
-                        }
-                    }
-            }
-
-            if sidebarVisible {
-                sidebar
-                    .frame(width: 232)
-                    .frame(maxHeight: .infinity)
-                    .padding(.leading, 10)
-                    .padding(.top, 42)
-                    .padding(.bottom, 10)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .shadow(color: .black.opacity(0.22), radius: 24, y: 8)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
             }
         }
         .environmentObject(player)

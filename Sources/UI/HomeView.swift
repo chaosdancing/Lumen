@@ -290,63 +290,11 @@ struct BrowseView: View {
 
     private func content(entries: [BrowseEntry]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-            if destination == .home {
-                homeSections(entries: entries)
-            } else if entries.isEmpty {
-                EmptyStateView(symbol: destination.symbol,
-                               title: "没有内容",
-                               message: emptyMessage,
-                               actionTitle: nil, action: nil)
-            } else if listMode {
-                LazyVStack(spacing: 0) {
-                    ForEach(entries) { entry in
-                        TileTap(target: entry.target) {
-                            BrowseListRow(entry: entry, badge: displayBadge(for: entry))
-                        }
-                        Divider().opacity(0.25).padding(.leading, 108)
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-            } else {
-                if destination == .recentlyAdded, prefs.showCarousel, entries.count > 1 {
-                    HeroCarousel(entries: Array(entries.prefix(8)),
-                                 height: heroHeight,
-                                 currentItem: $heroItem)
-                        .padding(.bottom, 6)
-                }
-                LazyVGrid(columns: grid, alignment: .leading, spacing: 16) {
-                    ForEach(entries) { entry in
-                        TileTap(target: entry.target) {
-                            PosterTile(title: entry.title,
-                                       subtitle: entry.subtitle,
-                                       item: entry.posterItem,
-                                       badge: displayBadge(for: entry),
-                                       progress: progress(for: entry))
-                        }
-                        .contextMenu {
-                            switch entry {
-                            case .movie(let m):
-                                Button("播放") { player.play(m) }
-                                Button(store.isFavorite(m.id) ? "取消收藏" : "收藏") {
-                                    store.toggleFavorite(m.id)
-                                }
-                                Button("清除进度", role: .destructive) {
-                                    store.clearProgress(itemID: m.id)
-                                }
-                            case .series(let s):
-                                if let next = s.nextEpisode(progress: store.progress) {
-                                    Button("继续观看 \(next.title)") { player.play(next) }
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 18)
-            }
-        }
+            #if os(macOS)
+            MainScrollView { scrollBody(entries: entries) }
+            #else
+            ScrollView { scrollBody(entries: entries) }
+            #endif
         }
         .background(HomeBrowseBackdrop(shows: destination != .search && !entries.isEmpty,
                                        item: heroItem ?? entries.first?.posterItem,
@@ -706,6 +654,66 @@ struct BrowseView: View {
         .foregroundStyle(.secondary)
         .padding(.leading, 8)
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func scrollBody(entries: [BrowseEntry]) -> some View {
+            if destination == .home {
+                homeSections(entries: entries)
+            } else if entries.isEmpty {
+                EmptyStateView(symbol: destination.symbol,
+                               title: "没有内容",
+                               message: emptyMessage,
+                               actionTitle: nil, action: nil)
+            } else if listMode {
+                LazyVStack(spacing: 0) {
+                    ForEach(entries) { entry in
+                        TileTap(target: entry.target) {
+                            BrowseListRow(entry: entry, badge: displayBadge(for: entry))
+                        }
+                        Divider().opacity(0.25).padding(.leading, 108)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+            } else {
+                if destination == .recentlyAdded, prefs.showCarousel, entries.count > 1 {
+                    HeroCarousel(entries: Array(entries.prefix(8)),
+                                 height: heroHeight,
+                                 currentItem: $heroItem)
+                        .padding(.bottom, 6)
+                }
+                LazyVGrid(columns: grid, alignment: .leading, spacing: 16) {
+                    ForEach(entries) { entry in
+                        TileTap(target: entry.target) {
+                            PosterTile(title: entry.title,
+                                       subtitle: entry.subtitle,
+                                       item: entry.posterItem,
+                                       badge: displayBadge(for: entry),
+                                       progress: progress(for: entry))
+                        }
+                        .contextMenu {
+                            switch entry {
+                            case .movie(let m):
+                                Button("播放") { player.play(m) }
+                                Button(store.isFavorite(m.id) ? "取消收藏" : "收藏") {
+                                    store.toggleFavorite(m.id)
+                                }
+                                Button("清除进度", role: .destructive) {
+                                    store.clearProgress(itemID: m.id)
+                                }
+                            case .series(let s):
+                                if let next = s.nextEpisode(progress: store.progress) {
+                                    Button("继续观看 \(next.title)") { player.play(next) }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 22)
+                .padding(.vertical, 18)
+            }
+        
     }
 
     private var emptyMessage: String {

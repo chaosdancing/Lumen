@@ -17,6 +17,8 @@ struct PersonCredit: Identifiable {
     let posterPath: String?
     let isTV: Bool
     let role: String?
+    var sourceID: UUID? = nil
+    var localTarget: DetailTarget? = nil
 }
 
 struct PersonView: View {
@@ -43,7 +45,7 @@ struct PersonView: View {
                                    actionTitle: "重试", action: { Task { await load() } })
                 } else if credits.isEmpty {
                     EmptyStateView(symbol: "film", title: "没有参演记录",
-                                   message: "TMDB 上这个演员没有可显示的作品。",
+                                   message: "当前媒体库里没有这位演员的参演作品。",
                                    actionTitle: nil, action: nil)
                 } else {
                     LazyVGrid(columns: grid, alignment: .leading, spacing: 16) {
@@ -88,10 +90,10 @@ struct PersonView: View {
 
     @ViewBuilder
     private func creditTile(_ credit: PersonCredit) -> some View {
-        let matched = matchedTarget(for: credit)
+        let matched = credit.localTarget ?? matchedTarget(for: credit)
         let content = VStack(alignment: .leading, spacing: 5) {
             CachedRemoteImage(path: CachedImageLoader.tmdbPath(credit.posterPath, size: "w342"),
-                              sourceID: route.sourceID) {
+                              sourceID: credit.sourceID ?? route.sourceID) {
                 placeholder
             }
             .aspectRatio(2.0 / 3.0, contentMode: .fit)
@@ -171,6 +173,83 @@ struct PersonView: View {
     // MARK: 数据
 
     private func load() async {
+        #if os(macOS)
+        await loadLocal()
+        #else
+        await loadRemote()
+        #endif
+    }
+
+    /// macOS：演员作品完全从本地库计算：扫描已缓存元数据的 cast，不再请求 TMDB。
+    private func loadLocal() async {
+        loading = true
+        defer { loading = false }
+        errorText = nil
+
+        func containsPerson(_ cast: [CastMember]) -> Bool {
+            cast.contains { member in
+                if let id = member.tmdbID, id == route.id { return true }
+                return !route.name.isEmpty && member.name == route.name
+            }
+        }
+        func role(in cast: [CastMember]) -> String? {
+            cast.first { member in
+                (member.tmdbID != nil && member.tmdbID == route.id) || member.name == route.name
+            }?.role
+        }
+
+        var list: [PersonCredit] = []
+        var seen = Set<String>()
+
+        for item in store.movieItems {
+            guard let meta = metaStore.metadata(for: item.id),
+                  containsPerson(meta.cast) else { continue }
+            let key = "movie-\(item.id)"
+            guard seen.insert(key).inserted else { continue }
+            let year = meta.releaseDate.flatMap { $0.split(separator: "-").first.map(String.init) }
+                ?? item.year.map(String.init)
+            list.append(PersonCredit(id: key,
+                                     tmdbID: meta.tmdbID ?? route.id,
+                                     title: meta.title ?? item.title,
+                                     year: year,
+                                     posterPath: meta.posterPath,
+                                     isTV: false,
+                                     role: role(in: meta.cast),
+                                     sourceID: item.sourceID,
+                                     localTarget: .movie(item)))
+        }
+
+        for group in store.seriesGroups {
+            guard let poster = group.posterItem else { continue }
+            let meta = metaStore.cachedSeriesMetadata(for: poster)
+                ?? metaStore.metadata(for: poster.id)
+            guard let meta, containsPerson(meta.cast) else { continue }
+            let key = "series-\(group.id)"
+            guard seen.insert(key).inserted else { continue }
+            let year = meta.releaseDate.flatMap { $0.split(separator: "-").first.map(String.init) }
+                ?? poster.year.map(String.init)
+            list.append(PersonCredit(id: key,
+                                     tmdbID: meta.tmdbID ?? route.id,
+                                     title: meta.title ?? group.title,
+                                     year: year,
+                                     posterPath: meta.posterPath,
+                                     isTV: true,
+                                     role: role(in: meta.cast),
+                                     sourceID: poster.sourceID,
+                                     localTarget: .series(group)))
+        }
+
+        credits = list.sorted {
+            if ($0.posterPath != nil) != ($1.posterPath != nil) { return $0.posterPath != nil }
+            if $0.year != $1.year { return ($0.year ?? "") > ($1.year ?? "") }
+            return $0.id < $1.id
+        }
+        AppLog.info("演员页（本地）\(route.name) → \(credits.count) 部")
+    }
+
+    #if !os(macOS)
+    /// iPad/iPhone 继续使用 TMDB 完整作品列表。
+    private func loadRemote() async {
         loading = true
         errorText = nil
         defer { loading = false }
@@ -219,7 +298,6 @@ struct PersonView: View {
                                          isTV: isTV,
                                          role: c["character"] as? String))
             }
-            // 有海报的排前面，再按年份倒序
             credits = list.sorted {
                 if ($0.posterPath != nil) != ($1.posterPath != nil) { return $0.posterPath != nil }
                 if $0.year != $1.year { return ($0.year ?? "") > ($1.year ?? "") }
@@ -232,6 +310,8 @@ struct PersonView: View {
             AppLog.error("演员页失败：\(error.logDescription)")
         }
     }
+    #endif
+
 }
 
 // MARK: - 季海报缩略图（本地 seasonNN-poster.jpg 优先，其次 TMDB）

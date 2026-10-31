@@ -792,3 +792,98 @@ extension View {
         }
     }
 }
+
+#if os(macOS)
+private struct MainScrollerHider: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            var parent = view.superview
+            while let node = parent {
+                if let scroll = node as? NSScrollView {
+                    scroll.hasVerticalScroller = false
+                    scroll.verticalScroller = nil
+                    break
+                }
+                parent = node.superview
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {}
+}
+
+private struct MainScrollMetrics: Equatable {
+    var offset: CGFloat = 0
+    var contentHeight: CGFloat = 0
+}
+
+private struct MainScrollMetricsKey: PreferenceKey {
+    static var defaultValue = MainScrollMetrics()
+    static func reduce(value: inout MainScrollMetrics, nextValue: () -> MainScrollMetrics) {
+        value = nextValue()
+    }
+}
+
+/// 主内容区的自绘滚动条：隐藏系统 overlay scroller，右侧画一条细胶囊。
+struct MainScrollView<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    @State private var offset: CGFloat = 0
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+
+    var body: some View {
+        ScrollView {
+            content
+                .background {
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: MainScrollMetricsKey.self,
+                            value: MainScrollMetrics(
+                                offset: geo.frame(in: .named("main.scroll")).minY,
+                                contentHeight: geo.size.height
+                            )
+                        )
+                    }
+                }
+        }
+        .coordinateSpace(name: "main.scroll")
+        .scrollIndicators(.never)
+        .background { MainScrollerHider() }
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { viewportHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { _, height in viewportHeight = height }
+            }
+        }
+        .onPreferenceChange(MainScrollMetricsKey.self) { metrics in
+            offset = metrics.offset
+            contentHeight = metrics.contentHeight
+        }
+        .overlay(alignment: .topTrailing) {
+            GeometryReader { geo in
+                let track = geo.size.height
+                if contentHeight > viewportHeight + 1, viewportHeight > 0, track > 0 {
+                    let thumb = max(28, track * viewportHeight / contentHeight)
+                    let maxScroll = max(1, contentHeight - viewportHeight)
+                    let progress = min(1, max(0, -offset / maxScroll))
+                    VStack(spacing: 0) {
+                        Capsule()
+                            .fill(Color.primary.opacity(0.26))
+                            .frame(width: 5, height: thumb)
+                            .offset(y: progress * (track - thumb))
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, 4)
+                    .padding(.vertical, 2)
+                    .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+}
+#endif
