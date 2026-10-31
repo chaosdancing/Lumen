@@ -529,6 +529,7 @@ struct HeroCarousel: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerPresenter
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject private var metaStore = MetadataStore.shared
 
     @State private var index = 0
     @State private var timer: Task<Void, Never>?
@@ -575,6 +576,16 @@ struct HeroCarousel: View {
         }
         .frame(height: height)
         .frame(maxWidth: .infinity)
+        .overlay {
+            if entries.count > 1 {
+                HStack {
+                    sideArrow("chevron.left", label: "上一部推荐") { shift(-1) }
+                    Spacer()
+                    sideArrow("chevron.right", label: "下一部推荐") { shift(1) }
+                }
+                .padding(.horizontal, 22)
+            }
+        }
         .onAppear {
             syncCurrent()
             startAutoAdvance()
@@ -609,7 +620,8 @@ struct HeroCarousel: View {
     }
 
     private func info(for entry: BrowseEntry) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let meta = entry.metadata(in: metaStore)
+        return VStack(alignment: .leading, spacing: 9) {
             Text(entry.title)
                 .font(.system(size: 32, weight: .bold))
                 .foregroundStyle(.white)
@@ -624,32 +636,71 @@ struct HeroCarousel: View {
                     .shadow(color: .black.opacity(0.4), radius: 8)
             }
 
-            HStack(spacing: 10) {
-                Button { play(entry) } label: {
-                    Label("播放", systemImage: "play.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 120, height: 34)
-                        .background(.white, in: Capsule())
-                        .foregroundStyle(.black)
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+            keyInfo(for: entry, meta: meta)
 
-                #if os(macOS)
-                Button { index = (index + 1) % max(1, entries.count) } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 34, height: 34)
-                        .background(.white.opacity(0.16), in: Circle())
-                        .foregroundStyle(.white)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                #endif
+            Button { play(entry) } label: {
+                Label("播放", systemImage: "play.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 120, height: 34)
+                    .background(.white, in: Capsule())
+                    .foregroundStyle(.black)
+                    .contentShape(Capsule())
             }
+            .buttonStyle(.plain)
+            .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
             .padding(.top, 2)
         }
+    }
+
+    /// 播放按钮上方的关键信息：评分、类型、分级、时长（没有元数据时不占位）。
+    @ViewBuilder
+    private func keyInfo(for entry: BrowseEntry, meta: MediaMetadata?) -> some View {
+        let rating = meta?.rating.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        let genres = Array((meta?.genres ?? []).prefix(2))
+        let certification = meta?.certification?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let runtime = meta?.runtimeMinutes
+        if rating != nil || !genres.isEmpty || !certification.isEmpty || (runtime ?? 0) > 0 {
+            HStack(spacing: 10) {
+                if let rating {
+                    Label(String(format: "%.1f", rating), systemImage: "star.fill")
+                        .foregroundStyle(.yellow)
+                }
+                if !genres.isEmpty {
+                    Text(genres.joined(separator: " / "))
+                }
+                if !certification.isEmpty {
+                    Text(certification)
+                }
+                if let runtime, runtime > 0 {
+                    Text("\(runtime) 分钟")
+                }
+            }
+            .font(.system(size: 12.5, weight: .medium))
+            .foregroundStyle(.white.opacity(0.86))
+            .shadow(color: .black.opacity(0.4), radius: 8)
+        }
+    }
+
+    private func sideArrow(_ symbol: String, label: String,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(.black.opacity(0.30), in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.22)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+        .accessibilityLabel(label)
+    }
+
+    private func shift(_ delta: Int) {
+        guard entries.count > 1 else { return }
+        index = (index + delta + entries.count) % entries.count
     }
 
     private var dots: some View {
