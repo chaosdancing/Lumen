@@ -468,7 +468,7 @@ struct BlurredBackdrop: View {
     private var isDark: Bool { scheme == .dark }
     /// 深色主题压黑，浅色主题压白 —— 正文用的是 .primary，两种主题下都得压得住
     private var wash: Color { isDark ? .black : .white }
-    private var washOpacity: Double { isDark ? 0.50 : 0.50 }
+    private var washOpacity: Double { isDark ? 0.46 : 0.42 }
 
     var body: some View {
         GeometryReader { proxy in

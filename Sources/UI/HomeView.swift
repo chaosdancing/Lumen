@@ -348,7 +348,7 @@ struct BrowseView: View {
             }
         }
         }
-        .background(HomeBrowseBackdrop(shows: destination == .home || destination == .recentlyAdded,
+        .background(HomeBrowseBackdrop(shows: destination != .search && !entries.isEmpty,
                                        item: heroItem ?? entries.first?.posterItem,
                                        scheme: colorScheme))
         .measureViewport { viewport = $0 }

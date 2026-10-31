@@ -22,6 +22,7 @@ struct LumenApp: App {
         WindowGroup {
             rootContent
         }
+        .defaultSize(width: 1440, height: 900)
         .windowStyle(.titleBar)
         .commands {
             CommandGroup(after: .newItem) {
@@ -415,6 +416,7 @@ struct RootView: View {
     @State private var newSourcePreset: SourceKind = .webdav
     @ObservedObject private var prefs = Preferences.shared
     @StateObject private var router = AppSectionRouter()
+    @State private var sidebarVisible = true
 
     var body: some View {
         // 外观跟着「设置 → 外观」走：这里必须由 RootView 自己带（它观察了 Preferences），
@@ -456,13 +458,32 @@ struct RootView: View {
     @ViewBuilder
     private var platformContent: some View {
         #if os(macOS)
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 210, ideal: 222, max: 260)
-        } detail: {
+        ZStack(alignment: .leading) {
             NavigationStack(path: $navPath) {
                 content
                     .detailDestinations()
+                    .toolbar {
+                        ToolbarItem(placement: .navigation) {
+                            Button {
+                                withAnimation(.smooth(duration: 0.22)) { sidebarVisible.toggle() }
+                            } label: {
+                                Image(systemName: "sidebar.left")
+                            }
+                            .help(sidebarVisible ? "隐藏侧边栏" : "显示侧边栏")
+                        }
+                    }
+            }
+
+            if sidebarVisible {
+                sidebar
+                    .frame(width: 232)
+                    .frame(maxHeight: .infinity)
+                    .padding(.leading, 10)
+                    .padding(.top, 42)
+                    .padding(.bottom, 10)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .shadow(color: .black.opacity(0.22), radius: 24, y: 8)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
             }
         }
         .environmentObject(player)
@@ -1032,23 +1053,34 @@ private struct SidebarScrollView<Content: View>: View {
     }
 }
 
+private final class WindowChromeView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyChrome()
+    }
+
+    func applyChrome() {
+        guard let window else { return }
+        // 先于工具栏布局设置全尺寸内容，避免搜索按钮先出现在左上再跳到右上。
+        if !window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.insert(.fullSizeContentView)
+        }
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+    }
+}
+
 private struct WindowAppearanceSetter: NSViewRepresentable {
     let name: NSAppearance.Name?
 
-    func makeNSView(context: Context) -> NSView { NSView() }
+    func makeNSView(context: Context) -> NSView { WindowChromeView() }
 
     func updateNSView(_ view: NSView, context: Context) {
         let target = name.flatMap { NSAppearance(named: $0) }
         DispatchQueue.main.async {
             guard let window = view.window else { return }
             if window.appearance !== target { window.appearance = target }
-            // 媒体库首页的头图要顶到窗口最上沿：保留工具栏（搜索/侧边栏开关），
-            // 但让内容延伸到透明标题栏下面。
-            if !window.styleMask.contains(.fullSizeContentView) {
-                window.styleMask.insert(.fullSizeContentView)
-            }
-            window.titlebarAppearsTransparent = true
-            window.titleVisibility = .hidden
+            (view as? WindowChromeView)?.applyChrome()
         }
     }
 }
