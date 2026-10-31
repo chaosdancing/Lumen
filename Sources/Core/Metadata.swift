@@ -782,24 +782,43 @@ final class TMDBClient {
     private static let keyAccount = "tmdb.api.key"
     private static let languageKey = "tmdb.language"
 
+    private static let keyLock = NSLock()
+    private static var cachedKey: String?
+    private static var keyLoaded = false
+
+    /// 启动/刮削/多个视图都会读 TMDB key；缓存首次读取，避免重复访问钥匙串。
     static var apiKey: String? {
-        let v = Keychain.get(account: keyAccount)
-        if let v, !v.isEmpty { return v }
-        #if DEBUG
-        if let legacy = UserDefaults.standard.string(forKey: keyAccount), !legacy.isEmpty {
-            if Keychain.set(legacy, account: keyAccount) {
-                UserDefaults.standard.removeObject(forKey: keyAccount)
+        keyLock.lock()
+        defer { keyLock.unlock() }
+        if keyLoaded { return cachedKey }
+        var value = Keychain.get(account: keyAccount)
+        if value?.isEmpty != false {
+            #if DEBUG
+            if let legacy = UserDefaults.standard.string(forKey: keyAccount), !legacy.isEmpty {
+                if Keychain.set(legacy, account: keyAccount) {
+                    UserDefaults.standard.removeObject(forKey: keyAccount)
+                }
+                value = legacy
+            } else {
+                value = nil
             }
-            return legacy
+            #else
+            value = nil
+            #endif
         }
-        #endif
-        return nil
+        cachedKey = value?.isEmpty == false ? value : nil
+        keyLoaded = true
+        return cachedKey
     }
 
     @discardableResult
     static func setAPIKey(_ key: String) -> Bool {
         if key.isEmpty { Keychain.delete(account: keyAccount) }
         else if !Keychain.set(key, account: keyAccount) { return false }
+        keyLock.lock()
+        cachedKey = key.isEmpty ? nil : key
+        keyLoaded = true
+        keyLock.unlock()
         #if DEBUG
         UserDefaults.standard.removeObject(forKey: keyAccount)
         #endif

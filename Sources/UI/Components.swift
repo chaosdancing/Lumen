@@ -525,6 +525,10 @@ struct HeroCarousel: View {
     var height: CGFloat = 420
     /// 把当前这一条的封面回传给页面，用来铺整页的虚化背景
     @Binding var currentItem: MediaItem?
+    /// 首页磨砂层布局：信息区上移、页码上移、图片更晚淡出
+    var infoBottomInset: CGFloat? = nil
+    var dotsBottomInset: CGFloat = 26
+    var fadeStart: Double = 0.70
 
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerPresenter
@@ -542,7 +546,7 @@ struct HeroCarousel: View {
                     backdrop(for: entry)
                     info(for: entry)
                         .padding(.horizontal, 32)
-                        .padding(.bottom, max(54, height * 0.14))
+                        .padding(.bottom, infoBottomInset ?? max(54, height * 0.14))
                 }
                 .tag(offset)
             }
@@ -569,7 +573,7 @@ struct HeroCarousel: View {
 
                 info(for: entry)
                     .padding(.horizontal, 40)
-                    .padding(.bottom, max(54, height * 0.14))
+                    .padding(.bottom, infoBottomInset ?? max(54, height * 0.14))
 
                 dots
             }
@@ -610,7 +614,7 @@ struct HeroCarousel: View {
                 ArtworkView(item: entry.posterItem, cornerRadius: 0, variant: .backdrop)
                     .frame(width: size.width, height: size.height)
                     .clipped()
-                    .mask(HeroFade.gradient(start: 0.70))
+                    .mask(HeroFade.gradient(start: fadeStart))
 
                 HeroScrims(strength: strength)
             }
@@ -637,6 +641,17 @@ struct HeroCarousel: View {
             }
 
             keyInfo(for: entry, meta: meta)
+
+            if let overview = meta?.overview?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !overview.isEmpty {
+                Text(overview)
+                    .font(.system(size: 12.5))
+                    .lineLimit(3)
+                    .lineSpacing(2)
+                    .foregroundStyle(.white.opacity(0.78))
+                    .frame(maxWidth: 560, alignment: .leading)
+                    .shadow(color: .black.opacity(0.35), radius: 8)
+            }
 
             Button { play(entry) } label: {
                 Label("播放", systemImage: "play.fill")
@@ -714,7 +729,7 @@ struct HeroCarousel: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         .padding(.trailing, 40)
-        .padding(.bottom, 26)
+        .padding(.bottom, dotsBottomInset)
         .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("轮播图页码")

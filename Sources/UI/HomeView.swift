@@ -239,16 +239,38 @@ struct BrowseView: View {
 
     private var heroHeight: CGFloat {
         #if os(macOS)
-        return min(max(viewport.height * 0.68, 380), 760)
+        // 桌面端头图几乎铺满窗口，下方“继续观看”压在磨砂层上。
+        return min(max(viewport.height * 0.98, 620), 1280)
         #elseif os(iOS)
         if DeviceInfo.isPad {
-            // iPad 头图更高，下缘在影片区背后继续淡出
-            return min(max(viewport.height * 0.66, 520), 820)
+            return min(max(viewport.height * 0.94, 700), 1180)
         }
         return min(max(viewport.height * 0.46, 280), 520)
         #else
-        return min(max(viewport.height * 0.68, 380), 760)
+        return min(max(viewport.height * 0.98, 620), 1280)
         #endif
+    }
+
+    /// 首页下方内容是否铺在头图/背景的磨砂层上（iPad 与 macOS）。
+    private var usesFrostedShelf: Bool {
+        #if os(macOS)
+        return true
+        #else
+        return DeviceInfo.isPad
+        #endif
+    }
+
+    /// 影片行压进头图的高度：让“继续观看”真正铺在背景上，而不是接到下面。
+    private var shelfOverlap: CGFloat {
+        usesFrostedShelf ? max(80, heroHeight * 0.14) : 0
+    }
+
+    private var heroInfoInset: CGFloat? {
+        usesFrostedShelf ? heroHeight * 0.24 : nil
+    }
+
+    private var heroFadeStart: Double {
+        usesFrostedShelf ? 0.88 : 0.70
     }
 
     var body: some View {
@@ -510,10 +532,18 @@ struct BrowseView: View {
             if prefs.showCarousel, entries.count > 1 {
                 HeroCarousel(entries: Array(entries.prefix(8)),
                              height: heroHeight,
-                             currentItem: $heroItem)
+                             currentItem: $heroItem,
+                             infoBottomInset: heroInfoInset,
+                             dotsBottomInset: shelfOverlap + 28,
+                             fadeStart: heroFadeStart)
             } else if prefs.showCarousel, let first = entries.first {
                 // 只有一条内容时没有轮播，也要有一块顶到屏幕顶端的头图
-                HeroCarousel(entries: [first], height: heroHeight, currentItem: $heroItem)
+                HeroCarousel(entries: [first],
+                             height: heroHeight,
+                             currentItem: $heroItem,
+                             infoBottomInset: heroInfoInset,
+                             dotsBottomInset: shelfOverlap + 28,
+                             fadeStart: heroFadeStart)
             }
 
             // iPad 把搜索与分类快捷入口移到顶栏；iPhone / macOS 仍放在首页内容里。
@@ -537,7 +567,12 @@ struct BrowseView: View {
                     row("电影", movies.prefix(12).map { BrowseEntry.movie($0) }, destination: .movies)
                 }
             }
-            .padding(.top, 24)
+            .padding(.top, usesFrostedShelf ? 112 - shelfOverlap : 24)
+            .background {
+                if usesFrostedShelf {
+                    HomeShelfBackground()
+                }
+            }
         }
         .padding(.bottom, 24)
     }
@@ -820,6 +855,26 @@ struct BrowseView: View {
 
 // MARK: - 列表行
 
+
+/// 首页影片区背后的磨砂层：从透明渐入 material，把影片行“托”在头图背景上。
+private struct HomeShelfBackground: View {
+    var body: some View {
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.0),
+                        .init(color: .black.opacity(0.85), location: 0.05),
+                        .init(color: .black, location: 0.13),
+                        .init(color: .black, location: 1.0)
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                )
+            }
+            .ignoresSafeArea(edges: .bottom)
+    }
+}
 
 private struct HomeBrowseBackdrop: View {
     let shows: Bool

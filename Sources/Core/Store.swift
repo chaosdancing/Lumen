@@ -37,7 +37,9 @@ enum Keychain {
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status != errSecSuccess { AppLog.error("Keychain 读取失败 status=\(status)") }
+        if status != errSecSuccess && status != errSecItemNotFound {
+            AppLog.error("Keychain 读取失败 status=\(status)")
+        }
         guard status == errSecSuccess,
               let data = item as? Data else { return nil }
         return String(data: data, encoding: .utf8)
@@ -64,18 +66,47 @@ enum Credentials {
         return map
     }
 
+    private static let cacheLock = NSLock()
+    private static var cache: [UUID: String] = [:]
+    private static var loaded: Set<UUID> = []
+
     static func set(_ value: String, for id: UUID) -> Bool {
-        Keychain.set(value, account: id.uuidString)
+        let ok = Keychain.set(value, account: id.uuidString)
+        if ok {
+            cacheLock.lock()
+            loaded.insert(id)
+            if value.isEmpty { cache.removeValue(forKey: id) } else { cache[id] = value }
+            cacheLock.unlock()
+        }
+        return ok
     }
 
+    /// 同一个源在启动、扫描、播放时会多次读取凭据；这里缓存首次结果，
+    /// 避免每次渲染/播放都触发一次钥匙串访问。
     static func get(_ id: UUID) -> String? {
-        let v = Keychain.get(account: id.uuidString)
-        if v?.isEmpty == false { return v }
-        #if DEBUG
-        return devMap()[id.uuidString]
-        #else
-        return nil
-        #endif
+        cacheLock.lock()
+        if loaded.contains(id) {
+            let cached = cache[id]
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
+        var value = Keychain.get(account: id.uuidString)
+        if value?.isEmpty != false {
+            #if DEBUG
+            value = devMap()[id.uuidString]
+            #else
+            value = nil
+            #endif
+        }
+        if value?.isEmpty == true { value = nil }
+
+        cacheLock.lock()
+        loaded.insert(id)
+        if let value { cache[id] = value } else { cache.removeValue(forKey: id) }
+        cacheLock.unlock()
+        return value
     }
 
     static func migrateLegacy() {
@@ -92,6 +123,10 @@ enum Credentials {
 
     static func delete(_ id: UUID) {
         Keychain.delete(account: id.uuidString)
+        cacheLock.lock()
+        loaded.insert(id)
+        cache.removeValue(forKey: id)
+        cacheLock.unlock()
         #if DEBUG
         var map = devMap()
         if map.removeValue(forKey: id.uuidString) != nil {
