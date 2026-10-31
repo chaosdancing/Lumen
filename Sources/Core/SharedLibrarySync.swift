@@ -209,6 +209,8 @@ final class SharedLibrarySync {
             }
         }
         store.applyShared(progress: records, favoriteIDs: favoriteIDs)
+        // 把本机已有、但媒体源上还没有的进度/收藏补写回去；内容相同会在 writeState 内跳过。
+        scheduleState(store: store)
     }
 
     /// 已有 library.json 的启动路径：不重新扫描也能把 NAS 上的进度/收藏读回来。
@@ -241,10 +243,12 @@ final class SharedLibrarySync {
               let source = try? MediaSourceFactory.make(config),
               let writable = source as? WritableMediaSource else { return }
         var catalog = SharedMetadataCatalog()
+        var existingData: Data?
         if let data = try? await source.data(for: Self.metadataPath),
            let existing = try? decoder.decode(SharedMetadataCatalog.self, from: data),
            existing.schema == 1 {
             catalog = existing
+            existingData = data
         }
         for item in store.library where item.sourceID == config.id {
             let meta = MetadataStore.shared.libraryMetadata(for: item, isSeries: item.kind == .episode)
@@ -254,6 +258,7 @@ final class SharedLibrarySync {
         }
         catalog.updatedAt = Date()
         guard !catalog.entries.isEmpty, let data = try? encoder.encode(catalog) else { return }
+        if data == existingData { return }
         do {
             try await writable.writeShared(data, path: Self.metadataPath)
             AppLog.info("共享元数据写入 \(config.name) entries=\(catalog.entries.count)")
@@ -282,10 +287,12 @@ final class SharedLibrarySync {
               let source = try? MediaSourceFactory.make(config),
               let writable = source as? WritableMediaSource else { return }
         var state = SharedLibraryState()
+        var existingData: Data?
         if let data = try? await source.data(for: Self.statePath),
            let existing = try? decoder.decode(SharedLibraryState.self, from: data),
            existing.schema == 1 {
             state = existing
+            existingData = data
         }
         let now = Date()
         for item in store.library where item.sourceID == config.id {
@@ -313,6 +320,7 @@ final class SharedLibrarySync {
         state.updatedAt = now
         guard !state.progress.isEmpty || !state.favorites.isEmpty,
               let data = try? encoder.encode(state) else { return }
+        if data == existingData { return }
         do {
             try await writable.writeShared(data, path: Self.statePath)
             AppLog.info("共享状态写入 \(config.name) progress=\(state.progress.count) favorites=\(state.favorites.count)")
