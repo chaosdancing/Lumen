@@ -468,7 +468,7 @@ struct BlurredBackdrop: View {
     private var isDark: Bool { scheme == .dark }
     /// 深色主题压黑，浅色主题压白 —— 正文用的是 .primary，两种主题下都得压得住
     private var wash: Color { isDark ? .black : .white }
-    private var washOpacity: Double { isDark ? 0.62 : 0.78 }
+    private var washOpacity: Double { isDark ? 0.56 : 0.68 }
 
     var body: some View {
         GeometryReader { proxy in
@@ -482,8 +482,8 @@ struct BlurredBackdrop: View {
                     LinearGradient(
                         stops: [
                             .init(color: .clear, location: 0.0),
-                            .init(color: wash.opacity(0.16), location: 0.55),
-                            .init(color: wash.opacity(0.34), location: 1.0)
+                            .init(color: wash.opacity(0.12), location: 0.55),
+                            .init(color: wash.opacity(0.26), location: 1.0)
                         ],
                         startPoint: .top, endPoint: .bottom
                     )

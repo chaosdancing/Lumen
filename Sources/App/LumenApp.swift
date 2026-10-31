@@ -599,9 +599,10 @@ struct RootView: View {
 
     // MARK: 侧边栏
 
+    #if os(macOS)
     private var sidebar: some View {
         VStack(spacing: 0) {
-            ScrollView {
+            SidebarScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     // 媒体库：点标题回首页
                     SidebarGroupHeader(title: "媒体库", emoji: "🎬",
@@ -681,6 +682,8 @@ struct RootView: View {
             AddSourceSheet(presetKind: newSourcePreset).environmentObject(store)
         }
     }
+
+    #endif
 
     // MARK: 侧边栏行
 
@@ -934,6 +937,78 @@ struct RootView: View {
 /// 直接把主窗口的 appearance 设掉。
 /// SwiftUI 的 `preferredColorScheme` 在 macOS 上遇到 NavigationSplitView 时经常不落到窗口上，
 /// 这里用 NSView 反查自己所在的窗口，最直接也最可靠（播放器窗口有自己的深色设置，不受影响）。
+private struct SidebarScrollMetrics: Equatable {
+    var offset: CGFloat = 0
+    var contentHeight: CGFloat = 0
+}
+
+private struct SidebarScrollMetricsKey: PreferenceKey {
+    static var defaultValue = SidebarScrollMetrics()
+    static func reduce(value: inout SidebarScrollMetrics, nextValue: () -> SidebarScrollMetrics) {
+        value = nextValue()
+    }
+}
+
+/// 侧边栏自己的滚动条：隐藏系统 overlay scrollbar，按内容比例画一条细胶囊。
+private struct SidebarScrollView<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    @State private var offset: CGFloat = 0
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+
+    var body: some View {
+        ScrollView {
+            content
+                .background {
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: SidebarScrollMetricsKey.self,
+                            value: SidebarScrollMetrics(
+                                offset: geo.frame(in: .named("sidebar.scroll")).minY,
+                                contentHeight: geo.size.height
+                            )
+                        )
+                    }
+                }
+        }
+        .coordinateSpace(name: "sidebar.scroll")
+        .scrollIndicators(.hidden)
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { viewportHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { _, height in viewportHeight = height }
+            }
+        }
+        .onPreferenceChange(SidebarScrollMetricsKey.self) { metrics in
+            offset = metrics.offset
+            contentHeight = metrics.contentHeight
+        }
+        .overlay(alignment: .topTrailing) {
+            GeometryReader { geo in
+                let track = geo.size.height
+                if contentHeight > viewportHeight + 1, viewportHeight > 0, track > 0 {
+                    let thumb = max(28, track * viewportHeight / contentHeight)
+                    let maxScroll = max(1, contentHeight - viewportHeight)
+                    let progress = min(1, max(0, -offset / maxScroll))
+                    VStack(spacing: 0) {
+                        Capsule()
+                            .fill(Color.primary.opacity(0.26))
+                            .frame(width: 5, height: thumb)
+                            .offset(y: progress * (track - thumb))
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, 3)
+                    .padding(.vertical, 2)
+                    .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+}
+
 private struct WindowAppearanceSetter: NSViewRepresentable {
     let name: NSAppearance.Name?
 

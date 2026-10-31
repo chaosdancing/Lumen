@@ -239,8 +239,8 @@ struct BrowseView: View {
 
     private var heroHeight: CGFloat {
         #if os(macOS)
-        // 桌面端头图几乎铺满窗口，下方“继续观看”压在磨砂层上。
-        return min(max(viewport.height * 0.98, 620), 1280)
+        // 桌面端头图是宽幅 banner：顶到窗口上沿，但把影片区抬上来，避免下方太空。
+        return min(max(viewport.height * 0.62, 460), 900)
         #elseif os(iOS)
         if DeviceInfo.isPad {
             return min(max(viewport.height * 0.94, 700), 1180)
@@ -262,11 +262,21 @@ struct BrowseView: View {
 
     /// 影片行压进头图的高度：让“继续观看”真正铺在背景上，而不是接到下面。
     private var shelfOverlap: CGFloat {
-        usesFrostedShelf ? max(80, heroHeight * 0.14) : 0
+        guard usesFrostedShelf else { return 0 }
+        #if os(macOS)
+        return max(80, heroHeight * 0.16)
+        #else
+        return max(80, heroHeight * 0.14)
+        #endif
     }
 
     private var heroInfoInset: CGFloat? {
-        usesFrostedShelf ? heroHeight * 0.18 : nil
+        guard usesFrostedShelf else { return nil }
+        #if os(macOS)
+        return heroHeight * 0.22
+        #else
+        return heroHeight * 0.18
+        #endif
     }
 
     private var heroFadeStart: Double {
