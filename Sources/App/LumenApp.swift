@@ -937,6 +937,28 @@ struct RootView: View {
 /// 直接把主窗口的 appearance 设掉。
 /// SwiftUI 的 `preferredColorScheme` 在 macOS 上遇到 NavigationSplitView 时经常不落到窗口上，
 /// 这里用 NSView 反查自己所在的窗口，最直接也最可靠（播放器窗口有自己的深色设置，不受影响）。
+/// SwiftUI 的 scrollIndicators 在部分 macOS 版本不会真正移除 NSScroller，
+/// 这里直接关掉所在 NSScrollView 的滚动条，只保留自绘胶囊。
+private struct SidebarScrollerHider: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            var parent = view.superview
+            while let node = parent {
+                if let scroll = node as? NSScrollView {
+                    scroll.hasVerticalScroller = false
+                    scroll.verticalScroller = nil
+                    break
+                }
+                parent = node.superview
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {}
+}
+
 private struct SidebarScrollMetrics: Equatable {
     var offset: CGFloat = 0
     var contentHeight: CGFloat = 0
@@ -973,7 +995,8 @@ private struct SidebarScrollView<Content: View>: View {
                 }
         }
         .coordinateSpace(name: "sidebar.scroll")
-        .scrollIndicators(.hidden)
+        .scrollIndicators(.never)
+        .background { SidebarScrollerHider() }
         .background {
             GeometryReader { geo in
                 Color.clear
@@ -994,7 +1017,7 @@ private struct SidebarScrollView<Content: View>: View {
                     let progress = min(1, max(0, -offset / maxScroll))
                     VStack(spacing: 0) {
                         Capsule()
-                            .fill(Color.primary.opacity(0.26))
+                            .fill(Color.primary.opacity(0.34))
                             .frame(width: 5, height: thumb)
                             .offset(y: progress * (track - thumb))
                         Spacer(minLength: 0)
