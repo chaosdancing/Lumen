@@ -979,6 +979,8 @@ private struct SidebarScrollView<Content: View>: View {
     @State private var offset: CGFloat = 0
     @State private var contentHeight: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
+    @State private var scrolling = false
+    @State private var scrollGeneration = 0
 
     var body: some View {
         ScrollView {
@@ -1006,8 +1008,20 @@ private struct SidebarScrollView<Content: View>: View {
             }
         }
         .onPreferenceChange(SidebarScrollMetricsKey.self) { metrics in
+            let moved = abs(metrics.offset - offset) > 0.2
             offset = metrics.offset
             contentHeight = metrics.contentHeight
+            if moved {
+                if !scrolling {
+                    withAnimation(.easeOut(duration: 0.12)) { scrolling = true }
+                }
+                scrollGeneration += 1
+                let generation = scrollGeneration
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                    guard generation == scrollGeneration else { return }
+                    withAnimation(.easeOut(duration: 0.35)) { scrolling = false }
+                }
+            }
         }
         .overlay(alignment: .topTrailing) {
             GeometryReader { geo in
@@ -1021,12 +1035,14 @@ private struct SidebarScrollView<Content: View>: View {
                             .fill(Color.primary.opacity(0.34))
                             .frame(width: 5, height: thumb)
                             .offset(y: progress * (track - thumb))
+                            .opacity(scrolling ? 1 : 0)
                         Spacer(minLength: 0)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                     .padding(.trailing, 3)
                     .padding(.vertical, 2)
                     .allowsHitTesting(false)
+                    .animation(.easeOut(duration: 0.2), value: scrolling)
                 }
             }
         }

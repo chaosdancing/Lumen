@@ -148,6 +148,15 @@ struct MediaDetailView: View {
         #endif
     }
 
+    /// macOS 浅色主题下头图底部容易露出一条浅色空带，正文向上压进渐变区。
+    private var sectionsTopPadding: CGFloat {
+        #if os(macOS)
+        return -6
+        #else
+        return 26
+        #endif
+    }
+
     private var hPad: CGFloat {
         #if os(macOS)
         return 40
@@ -173,7 +182,7 @@ struct MediaDetailView: View {
                     hero
                     sections
                         .padding(.horizontal, hPad)
-                        .padding(.top, 26)
+                        .padding(.top, sectionsTopPadding)
                         .padding(.bottom, 48)
                 }
             
