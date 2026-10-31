@@ -565,6 +565,12 @@ struct HeroCarousel: View {
             ForEach(Array(entries.enumerated()), id: \.element.id) { offset, entry in
                 ZStack(alignment: .bottomLeading) {
                     backdrop(for: entry)
+                    // 点封面任意位置进入对应电影 / 剧集详情；播放按钮仍在信息层最上面。
+                    TileTap(target: entry.target) {
+                        Color.clear
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                    }
                     info(for: entry)
                         .padding(.horizontal, 32)
                         .padding(.bottom, infoBottomInset ?? max(54, height * 0.14))
@@ -591,6 +597,13 @@ struct HeroCarousel: View {
 
                 backdrop(for: entry)
                     .id(entry.id)
+
+                // 点封面任意位置进入对应电影 / 剧集详情；播放按钮仍在信息层最上面。
+                TileTap(target: entry.target) {
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                }
 
                 info(for: entry)
                     .padding(.horizontal, 40)
@@ -748,8 +761,7 @@ struct HeroCarousel: View {
                     .animation(.easeInOut(duration: 0.2), value: index)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-        .padding(.trailing, 40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .padding(.bottom, dotsBottomInset)
         .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)

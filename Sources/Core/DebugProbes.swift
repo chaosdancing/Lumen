@@ -88,7 +88,8 @@ enum DebugProbes {
             Preferences.shared.appearance = "light"
             try? await Task.sleep(nanoseconds: 1_200_000_000)
         }
-        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        // `slow` 用于等 NAS 元数据读完再截详情页，避免把加载态当成最终版式。
+        try? await Task.sleep(nanoseconds: spec.contains("slow") ? 9_000_000_000 : 3_000_000_000)
         guard let scene = UIApplication.shared.connectedScenes
                 .compactMap({ $0 as? UIWindowScene })
                 .first(where: { $0.activationState == .foregroundActive }),

@@ -1182,6 +1182,7 @@ struct BrowseTab: View {
     let destination: BrowseDestination
     @StateObject private var nav = NavModel()
     @EnvironmentObject private var router: AppSectionRouter
+    @EnvironmentObject private var store: AppStore
     @State private var selection: BrowseDestination = .home
 
     /// iPhone 仍用旧的分类菜单；iPad 的栏目切换统一走 SectionMenu。
@@ -1269,8 +1270,36 @@ struct BrowseTab: View {
             guard DeviceInfo.isPad else { return }
             select(.home)
         }
+        #if DEBUG
+        .task { await openDetailIfRequested() }
+        #endif
         .environmentObject(nav)   // 挂在栈外面，push 出来的页面也能拿到
     }
+
+    #if DEBUG
+    /// 诊断：容器里放 `detail-test.flag`（剧名或库内相对路径）→ 启动后直接打开详情页，
+    /// 配合 `shot.flag` 可在真机上无触摸核对详情版式。与 macOS 的同名探针一致。
+    @MainActor
+    private func openDetailIfRequested() async {
+        let flag = StorePaths.root.appendingPathComponent("detail-test.flag")
+        guard let raw = try? String(contentsOf: flag, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: flag)
+        let target = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return }
+        for _ in 0..<40 where store.library.isEmpty {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        if let series = store.seriesGroups.first(where: { $0.title.contains(target) }) {
+            AppLog.info("DETAIL TEST 打开剧集 \(series.title)")
+            nav.path.append(DetailTarget.series(series))
+        } else if let movie = store.library.first(where: { $0.path == target || $0.title.contains(target) }) {
+            AppLog.info("DETAIL TEST 打开电影 \(movie.title)")
+            nav.path.append(DetailTarget.movie(movie))
+        } else {
+            AppLog.error("DETAIL TEST 找不到条目：\(target)")
+        }
+    }
+    #endif
 }
 
 /// 偏好：默认展示全部影视，顶栏是类型 / 年代 / 评分 / 分级 / 收藏夹

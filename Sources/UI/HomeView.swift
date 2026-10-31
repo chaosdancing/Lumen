@@ -102,6 +102,11 @@ extension BrowseEntry {
         }
         let displayName = meta?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let records = mediaItems.compactMap { store.record(for: $0.id) }
+        let isFavorite: Bool
+        switch self {
+        case .movie(let item): isFavorite = store.isFavorite(item.id)
+        case .series(let group): isFavorite = store.isSeriesFavorite(group)
+        }
         return LibraryQuery.Item(
             id: id,
             title: displayName?.isEmpty == false ? displayName! : title,
@@ -116,6 +121,7 @@ extension BrowseEntry {
             addedAt: sortDate,
             isWatched: !mediaItems.isEmpty && mediaItems.allSatisfy { store.record(for: $0.id)?.isFinished == true },
             isContinuing: records.contains(where: \.isInProgress),
+            isFavorite: isFavorite,
             lastPlayedAt: records.map(\.updatedAt).max()
         )
     }
@@ -243,6 +249,12 @@ struct BrowseView: View {
         return min(max(viewport.height * 0.88, 600), 1150)
         #elseif os(iOS)
         if DeviceInfo.isPad {
+            if viewport.width > viewport.height {
+                // 内容区上叠 100pt、内部留白 32pt；首排标题约 40pt。
+                // 横屏首屏展示完整海报，并给底边留出 12pt。
+                // 顶部延伸到安全区后，补偿导航容器与实际可见区域的差值。
+                return max(400, viewport.height + 68 - 40 + 36 - rowPosterWidth * 1.5 - 12)
+            }
             // 头图收短，让「继续观看」整排 + 下一排的一小截露出来。
             return min(max(viewport.height * 0.62, 480), 820)
         }
@@ -505,6 +517,7 @@ struct BrowseView: View {
         let series = store.seriesGroups
         let movies = store.movieItems
         let continueItems = continuingEntries(series: series, movies: movies)
+        let carouselEntries = homeCarouselEntries
 
         VStack(alignment: .leading, spacing: 0) {
             if store.library.isEmpty {
@@ -514,14 +527,14 @@ struct BrowseView: View {
                                actionTitle: nil, action: nil)
                     .padding(.top, 40)
             }
-            if prefs.showCarousel, entries.count > 1 {
-                HeroCarousel(entries: Array(entries.prefix(8)),
+            if prefs.showCarousel, carouselEntries.count > 1 {
+                HeroCarousel(entries: carouselEntries,
                              height: heroHeight,
                              currentItem: $heroItem,
                              infoBottomInset: heroInfoInset,
                              dotsBottomInset: shelfOverlap + 28,
                              fadeStart: heroFadeStart)
-            } else if prefs.showCarousel, let first = entries.first {
+            } else if prefs.showCarousel, let first = carouselEntries.first {
                 // 只有一条内容时没有轮播，也要有一块顶到屏幕顶端的头图
                 HeroCarousel(entries: [first],
                              height: heroHeight,
@@ -564,6 +577,16 @@ struct BrowseView: View {
             .padding(.top, usesImmersivePadHome && !entries.isEmpty ? -100 : 0)
         }
         .padding(.bottom, 24)
+    }
+
+    /// 首页轮播用简单推荐算法单独选片，不跟随列表当前排序。
+    /// 续播 > 收藏 > 未看完 > 高分/最近添加；不发起网络请求。
+    private var homeCarouselEntries: [BrowseEntry] {
+        guard destination == .home else { return Array(entries.prefix(8)) }
+        let snapshot = LibrarySnapshot(store: store, metadata: metaStore)
+        let picks = LibraryQuery.carouselRecommendations(snapshot.items, limit: 8)
+        let recommended = snapshot.entries(for: picks)
+        return recommended.isEmpty ? Array(entries.prefix(8)) : recommended
     }
 
     /// 首页搜索入口：点一下进搜索页并自动聚焦输入框（和 macOS 的 ⌘F 同一条路径）

@@ -94,6 +94,7 @@ enum LibraryQuery {
         var addedAt: Date
         var isWatched = false
         var isContinuing = false
+        var isFavorite = false
         var lastPlayedAt: Date?
     }
 
@@ -132,6 +133,35 @@ enum LibraryQuery {
             }
             return precedes(lhs, rhs, sort: .rating)
         }.prefix(max(0, limit)).map { $0 }
+    }
+
+    /// 首页轮播的简单推荐：续播优先，其次收藏、未看完、评分与最近添加。
+    /// 不发起任何网络请求，只使用已缓存的元数据和播放记录。
+    static func carouselRecommendations(_ items: [Item], limit: Int = 8,
+                                        now: Date = Date()) -> [Item] {
+        let all = results(items)
+        guard !all.isEmpty, limit > 0 else { return [] }
+        let scored = all.map { item -> (item: Item, score: Double) in
+            var score = 0.0
+            if item.isContinuing {
+                score += 1_000
+                if let last = item.lastPlayedAt {
+                    score += max(0, 30 - now.timeIntervalSince(last) / 86_400) * 4
+                }
+            }
+            if item.isFavorite { score += 300 }
+            if !item.isWatched { score += 150 }
+            if let rating = item.rating, rating.isFinite, rating > 0 {
+                score += rating * 15
+            }
+            let age = now.timeIntervalSince(item.addedAt) / 86_400
+            score += max(0, 45 - age) * 2
+            return (item, score)
+        }
+        return scored.sorted {
+            if $0.score != $1.score { return $0.score > $1.score }
+            return $0.item.title.localizedStandardCompare($1.item.title) == .orderedAscending
+        }.prefix(limit).map { $0.item }
     }
 
     static func categories(_ items: [Item], kind: CategoryKind) -> [CategoryCount] {

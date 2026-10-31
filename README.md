@@ -102,7 +102,8 @@ flag 文件位于应用的 `Application Support/Lumen/`，macOS 沙盒构建位�
 | `mpv-wid-test.flag` | 库内相对路径；以真实窗口检查当前 GL render API |
 | `meta-test.flag` | 库内相对路径；检查 NFO / TMDB 调用 |
 | `thumb-test.flag` | 每行一个库内相对路径；检查封面和字幕链路，最多四条 |
-| `shot.flag` | 如 `1440x900 dark`；窗口截图写入 `shot.png`，可附 `quick` 或 `player`；macOS 用 ScreenCaptureKit，iPad 直接绘制 key window |
+| `detail-test.flag` | 剧名或库内相对路径；启动后直接打开详情页（iPad / macOS） |
+| `shot.flag` | 如 `1440x900 dark`；窗口截图写入 `shot.png`，可附 `quick`、`player` 或 `slow`；macOS 用 ScreenCaptureKit，iPad 直接绘制 key window |
 
 窗口截图在 macOS 使用 ScreenCaptureKit（需要系统屏幕录制权限），在 iPad 上直接绘制 key window。未授权或截取失败会记录错误；不以空白图片报告成功。连接与探针细节可查看 `lumen.log`。
 

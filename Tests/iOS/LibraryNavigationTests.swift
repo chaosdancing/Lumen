@@ -1,6 +1,19 @@
 import XCTest
 
 final class LibraryNavigationTests: XCTestCase {
+    func testCarouselImageOpensDetail() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let carousel = app.descendants(matching: .any)["library.carousel"].firstMatch
+        guard carousel.waitForExistence(timeout: 10) else {
+            throw XCTSkip("此测试需要媒体库中至少两条内容且启用轮播")
+        }
+        // 点轮播图上半部，避开左下角的信息与播放按钮。
+        carousel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)).tap()
+        XCTAssertTrue(app.buttons["更多操作"].waitForExistence(timeout: 5))
+    }
+
     func testCarouselSwipeAndRotation() throws {
         let app = XCUIApplication()
         app.launch()

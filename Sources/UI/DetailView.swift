@@ -138,11 +138,40 @@ struct MediaDetailView: View {
 
     private var pageBackground: Color { Color.pageBackground }
 
+    private var isPadDetail: Bool {
+        #if os(iOS)
+        return DeviceInfo.isPad
+        #else
+        return false
+        #endif
+    }
+
+    private var isPadLandscape: Bool {
+        isPadDetail && viewport.width > viewport.height
+    }
+
+    /// iPad 横屏详情：信息与下方模块整体下移，让最后一块内容贴住屏幕下缘。
+    private static let padLandscapeInfoDrop: CGFloat = 130
+    /// 电影多一段演职人员，留一点安全边距，避免姓名/角色压到屏幕底边。
+    private static let padMovieLandscapeInfoDrop: CGFloat = 110
+
     /// 头图高度：跟窗口走（VidHub 的比例约 0.68 屏高），并设上下限
     private func heroHeight(_ size: CGSize) -> CGFloat {
         #if os(macOS)
         return min(max(size.height * 0.80, 460), 860)
         #else
+        if isPadDetail {
+            let base: CGFloat
+            if liveSeries == nil {
+                base = max(360, size.height - 170)
+            } else {
+                base = min(max(min(size.height * 0.64, size.width * 0.90), 360), 740)
+            }
+            // 横屏：电影让演职人员、剧集让选集行贴住屏幕下缘。
+            guard size.width > size.height else { return base }
+            let drop = liveSeries == nil ? Self.padMovieLandscapeInfoDrop : Self.padLandscapeInfoDrop
+            return min(base + drop, liveSeries == nil ? 880 : 860)
+        }
         // 电视剧详情头图更高；电影保持原来的比例。
         let ratio = liveSeries == nil ? 0.66 : 0.76
         let h = min(size.height * ratio, size.width * 1.02)
@@ -155,6 +184,11 @@ struct MediaDetailView: View {
         #if os(macOS)
         return -6
         #else
+        if isPadDetail && liveSeries != nil {
+            // 信息块已经压到头图下缘，选季区从封面底边直接接上，
+            // 中间只留 hero 内的 24pt 窄缝，不再额外下沉。
+            return 0
+        }
         return 26
         #endif
     }
@@ -185,7 +219,7 @@ struct MediaDetailView: View {
                     sections
                         .padding(.horizontal, hPad)
                         .padding(.top, sectionsTopPadding)
-                        .padding(.bottom, 48)
+                        .padding(.bottom, isPadDetail ? 12 : 48)
                 }
             
     }
@@ -194,12 +228,16 @@ struct MediaDetailView: View {
         ZStack(alignment: .top) {
             // 整页背景 = 同一张剧照的虚化版，头图淡出后直接接上，正文就浮在上面
             pageBackground.ignoresSafeArea()
-            BlurredBackdrop(item: posterItem, scheme: colorScheme)
+            BlurredBackdrop(item: posterItem, scheme: isPadDetail ? .dark : colorScheme)
 
             detailScrollView
                 .ignoresSafeArea(edges: .top)
                 .measureViewport { viewport = $0 }
         }
+        .environment(\.colorScheme, isPadDetail ? .dark : colorScheme)
+        #if os(iOS)
+        .toolbarColorScheme(isPadDetail ? .dark : nil, for: .navigationBar)
+        #endif
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -235,9 +273,10 @@ struct MediaDetailView: View {
 
     private var hero: some View {
         let height = heroHeight(viewport)
-        // 底部留出一段"只渐变、不压字"的区域：文字全部落在渐变开始之前，
-        // 深色/浅色主题下都不会出现白字压白底
-        let bottomInset = max(48, height * 0.105)
+        // 其它平台底部留出一段"只渐变、不压字"的区域，文字全部落在渐变开始之前；
+        // iPad 剧集反过来：所有剧集信息整体下移，只给封面底边留一条窄缝，
+        // 让信息块正好落在选季模块上面。
+        let bottomInset = isPadDetail && liveSeries != nil ? 24 : max(48, height * 0.105)
 
         return ZStack(alignment: .bottomLeading) {
             backdrop
@@ -406,11 +445,12 @@ struct MediaDetailView: View {
                     .font(.system(size: 12.5))
                     .foregroundStyle(.white.opacity(0.9))
                     .lineSpacing(4)
-                    .lineLimit(overviewExpanded ? nil : 7)
+                    .lineLimit(overviewExpanded ? nil : 3)
                     .fixedSize(horizontal: false, vertical: true)
                     .shadow(color: .black.opacity(0.35), radius: 8)
 
-                if text.count > 170 {
+                // 3 行摘要大约能放下 120 个中文字符；超过就提供「展开全部」。
+                if text.count > 120 {
                     Button {
                         withAnimation(.smooth(duration: 0.3)) { overviewExpanded.toggle() }
                     } label: {
@@ -467,22 +507,32 @@ struct MediaDetailView: View {
             }
             .foregroundStyle(actionFailed ? Color.orange : Color.secondary)
         } else if let item = posterItem, metaStore.inFlight.contains(item.id) {
-            HStack {
-                ProgressView().controlSize(.small)
-                Text("正在读取影视信息…").font(.caption).foregroundStyle(.secondary)
+            if !hidesSeriesLoadingStatus {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("正在读取影视信息…").font(.caption).foregroundStyle(.secondary)
+                }
             }
         } else if let item = posterItem, let state = metaStore.loadState[item.id] {
             metadataLoadStatus(state)
         }
     }
 
+    /// iPad 剧集的信息块已经贴住选季区，加载中的提示会把选季推下去；
+    /// 缓存信息已可读时静默刷新，错误与手动操作提示仍照常显示。
+    private var hidesSeriesLoadingStatus: Bool {
+        isPadDetail && liveSeries != nil
+    }
+
     @State private var retryRescan = false
 
     @ViewBuilder private func metadataLoadStatus(_ state: MetadataLoadState) -> some View {
         if state.isLoading {
-            HStack {
-                ProgressView().controlSize(.small)
-                Text(state.text ?? "正在读取影视信息…").font(.caption)
+            if !hidesSeriesLoadingStatus {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(state.text ?? "正在读取影视信息…").font(.caption)
+                }
             }
         } else if let message = state.error {
             HStack(alignment: .top) {
@@ -598,10 +648,27 @@ struct MediaDetailView: View {
             // macOS 上选集区直接浮在模糊背景上，不要再加一层明显的灰色卡片底。
             Color.clear
             #else
+            if isPadLandscape {
+                // 横屏选集直接浮在整页背景上，消除模块四周的材质边界。
+                Color.clear
+            } else if isPadDetail {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .opacity(0.65)
+                    .mask {
+                        LinearGradient(stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .black, location: 0.30),
+                            .init(color: .black, location: 0.75),
+                            .init(color: .clear, location: 1)
+                        ], startPoint: .top, endPoint: .bottom)
+                    }
+            } else {
             // iPad：选集模块用轻磨砂，和首页卡片区一样融进背景。
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.ultraThinMaterial)
                 .opacity(0.55)
+            }
             #endif
         }
     }
