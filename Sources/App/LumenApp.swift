@@ -944,6 +944,13 @@ private struct WindowAppearanceSetter: NSViewRepresentable {
         DispatchQueue.main.async {
             guard let window = view.window else { return }
             if window.appearance !== target { window.appearance = target }
+            // 媒体库首页的头图要顶到窗口最上沿：保留工具栏（搜索/侧边栏开关），
+            // 但让内容延伸到透明标题栏下面。
+            if !window.styleMask.contains(.fullSizeContentView) {
+                window.styleMask.insert(.fullSizeContentView)
+            }
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
         }
     }
 }

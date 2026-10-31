@@ -350,6 +350,7 @@ struct BrowseView: View {
         .toolbarBackground(.hidden, for: .tabBar)
         #else
         .navigationTitle(category?.title ?? destination.title)
+        .ignoresSafeArea(.container, edges: destination == .home ? .top : [])
         #endif
         .onAppear {
             if let category {
@@ -546,7 +547,9 @@ struct BrowseView: View {
                              fadeStart: heroFadeStart)
             }
 
-            // iPad 把搜索与分类快捷入口移到顶栏；iPhone / macOS 仍放在首页内容里。
+            // iPad 把搜索与分类快捷入口移到顶栏；iPhone 保留页面内入口；
+            // macOS 没有任何页面中部的搜索/分类按钮，入口在工具栏与侧边栏。
+            #if os(iOS)
             if !DeviceInfo.isPad {
                 searchEntry
                     .padding(.horizontal, 22)
@@ -555,6 +558,7 @@ struct BrowseView: View {
                 quickLinks
                     .padding(.top, 14)
             }
+            #endif
 
             VStack(alignment: .leading, spacing: 26) {
                 if !continueItems.isEmpty {
