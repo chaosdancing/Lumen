@@ -332,19 +332,14 @@ struct SectionMenu: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 16)
-                    .frame(height: 34)
-                    .background(Color.primary.opacity(0.12), in: Capsule())
                 Image(systemName: "chevron.down")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.secondary)
-                    .padding(.trailing, 11)
                     .rotationEffect(.degrees(showing ? 180 : 0))
             }
-            .padding(4)
-            .background(.regularMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(.primary.opacity(0.10)))
-            .contentShape(Capsule())
+            .padding(.horizontal, 4)
+            .shadow(color: .black.opacity(0.32), radius: 3, y: 1)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .tint(Color.primary)
@@ -385,11 +380,21 @@ struct SectionMenu: View {
     }
 }
 
+@ToolbarContentBuilder
+private func padSectionToolbarItem() -> some ToolbarContent {
+    if #available(iOS 26.0, *) {
+        ToolbarItem(placement: .topBarLeading) { SectionMenu() }
+            .sharedBackgroundVisibility(.hidden)
+    } else {
+        ToolbarItem(placement: .topBarLeading) { SectionMenu() }
+    }
+}
+
 private struct PadSectionToolbar: ViewModifier {
     func body(content: Content) -> some View {
         content.toolbar {
             if DeviceInfo.isPad {
-                ToolbarItem(placement: .topBarLeading) { SectionMenu() }
+                padSectionToolbarItem()
             }
         }
     }
@@ -1222,10 +1227,10 @@ struct BrowseTab: View {
             content
                 .detailDestinations()
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        if DeviceInfo.isPad {
-                            SectionMenu()
-                        } else {
+                    if DeviceInfo.isPad {
+                        padSectionToolbarItem()
+                    } else {
+                        ToolbarItem(placement: .topBarLeading) {
                             Menu {
                                 ForEach(destinations, id: \.self) { destination in
                                     Button { select(destination) } label: {
@@ -1284,10 +1289,7 @@ struct PreferencesTab: View {
         selection = destination
     }
 
-    private var topSearch: (() -> Void)? {
-        guard nav.path.isEmpty else { return nil }
-        return { nav.open(BrowseRoute.list(.search)) }
-    }
+    private var topSearch: (() -> Void)? { nil }
 
     @ViewBuilder private var content: some View {
         switch selection {
@@ -1310,9 +1312,7 @@ struct PreferencesTab: View {
             content
                 .detailDestinations()
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        SectionMenu()
-                    }
+                    padSectionToolbarItem()
                     if showsTopActions {
                         ToolbarItem(placement: .principal) {
                             BrowseSegmentedControl(destinations: quickDestinations,

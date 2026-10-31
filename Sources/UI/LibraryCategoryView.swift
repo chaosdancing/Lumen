@@ -58,8 +58,15 @@ struct LibraryCategoryView: View {
         #if os(iOS)
         .toolbar {
             if let onSearch {
-                ToolbarItem(placement: .topBarTrailing) {
-                    SearchToolbarButton(action: onSearch, identifier: searchIdentifier)
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        SearchToolbarButton(action: onSearch, identifier: searchIdentifier, standalone: false)
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        SearchToolbarButton(action: onSearch, identifier: searchIdentifier, standalone: false)
+                    }
                 }
             }
         }

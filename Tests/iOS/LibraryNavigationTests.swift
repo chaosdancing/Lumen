@@ -48,6 +48,21 @@ final class LibraryNavigationTests: XCTestCase {
         movieShot.lifetime = .keepAlways
         add(movieShot)
 
+        // 搜索已收进「三个点」菜单；右侧不再单独显示放大镜
+        XCTAssertFalse(app.buttons["library.search"].exists)
+        app.buttons["browse.options"].tap()
+        let searchItem = app.buttons["搜索"].firstMatch
+        XCTAssertTrue(searchItem.waitForExistence(timeout: 5))
+        searchItem.tap()
+        let mediaField = app.textFields["搜索媒体库"]
+        XCTAssertTrue(mediaField.waitForExistence(timeout: 5))
+        mediaField.tap()
+        mediaField.typeText("NoSuchFilm123456")
+        XCTAssertTrue(app.staticTexts["没有内容"].waitForExistence(timeout: 5))
+        app.buttons["清除搜索"].tap()
+        let backButton = app.navigationBars.buttons.element(boundBy: 0)
+        if backButton.exists { backButton.tap() }
+
         // 再次选择「媒体库」应回到媒体库首页（首页没有排序/筛选菜单）
         sections.tap()
         app.buttons["媒体库"].firstMatch.tap()
@@ -71,17 +86,8 @@ final class LibraryNavigationTests: XCTestCase {
         app.buttons["preferences.quick.收藏夹"].tap()
         XCTAssertTrue(app.buttons["browse.options"].waitForExistence(timeout: 5))
 
-        // 搜索按钮保持在右上角
-        let search = app.buttons["preferences.search"]
-        XCTAssertTrue(search.waitForExistence(timeout: 5))
-        search.tap()
-        let field = app.textFields["搜索媒体库"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        field.tap()
-        field.typeText("NoSuchFilm123456")
-        XCTAssertTrue(app.staticTexts["没有内容"].waitForExistence(timeout: 5))
-        app.buttons["清除搜索"].tap()
-        XCTAssertTrue(app.staticTexts["推荐观看 · 继续观看优先，其次未看高分与最近添加"].exists)
+        // 偏好页不再提供搜索入口
+        XCTAssertFalse(app.buttons["preferences.search"].exists)
     }
 
     func testPadSectionMenuConsolidatesSourcesServersSettings() {

@@ -143,8 +143,10 @@ struct MediaDetailView: View {
         #if os(macOS)
         return min(max(size.height * 0.80, 460), 860)
         #else
-        let h = min(size.height * 0.66, size.width * 1.02)
-        return min(max(h, 360), 760)
+        // 电视剧详情头图更高；电影保持原来的比例。
+        let ratio = liveSeries == nil ? 0.66 : 0.76
+        let h = min(size.height * ratio, size.width * 1.02)
+        return min(max(h, 360), 780)
         #endif
     }
 
@@ -596,8 +598,10 @@ struct MediaDetailView: View {
             // macOS 上选集区直接浮在模糊背景上，不要再加一层明显的灰色卡片底。
             Color.clear
             #else
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
+            // iPad：选集模块用轻磨砂，和首页卡片区一样融进背景。
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .opacity(0.55)
             #endif
         }
     }

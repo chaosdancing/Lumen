@@ -243,7 +243,8 @@ struct BrowseView: View {
         return min(max(viewport.height * 0.88, 600), 1150)
         #elseif os(iOS)
         if DeviceInfo.isPad {
-            return min(max(viewport.height * 0.94, 700), 1180)
+            // 头图收短，让「继续观看」整排 + 下一排的一小截露出来。
+            return min(max(viewport.height * 0.62, 480), 820)
         }
         return min(max(viewport.height * 0.46, 280), 520)
         #else
@@ -266,7 +267,7 @@ struct BrowseView: View {
         #if os(macOS)
         return max(80, heroHeight * 0.20)
         #else
-        return max(80, heroHeight * 0.14)
+        return max(80, heroHeight * 0.10)
         #endif
     }
 
@@ -275,7 +276,7 @@ struct BrowseView: View {
         #if os(macOS)
         return heroHeight * 0.18
         #else
-        return heroHeight * 0.18
+        return heroHeight * 0.16
         #endif
     }
 
@@ -367,27 +368,11 @@ struct BrowseView: View {
             // iPad 把排序/筛选/网格和搜索放进同一个 trailing HStack，
             // 搜索固定在最后，保证始终在最右上角。
             if onSearch != nil || (destination != .home && destination != .search) {
-                ToolbarItem(placement: .primaryAction) {
-                    let showsOptions = destination != .home && destination != .search
-                    if let onSearch, showsOptions {
-                        HStack(spacing: 2) {
-                            SearchToolbarButton(action: onSearch,
-                                                identifier: searchIdentifier,
-                                                standalone: false)
-                            optionsMenu(standalone: false)
-                        }
-                        .padding(3)
-                        .background(.regularMaterial, in: Capsule())
-                        .overlay(Capsule().strokeBorder(.primary.opacity(0.10)))
-                    } else if let onSearch {
-                        SearchToolbarButton(action: onSearch, identifier: searchIdentifier)
-                    } else if showsOptions {
-                        if DeviceInfo.isPad {
-                            optionsMenu(standalone: true)
-                        } else {
-                            sortControls
-                        }
-                    }
+                if #available(iOS 26.0, *) {
+                    ToolbarItem(placement: .primaryAction) { trailingActions }
+                        .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .primaryAction) { trailingActions }
                 }
             }
             #endif
@@ -435,8 +420,36 @@ struct BrowseView: View {
     /// iPad 顶栏空间有限：把排序、筛选、网格/列表收进一个圆形菜单，给分类胶囊留位置。
     private var optionsMenu: some View { optionsMenu(standalone: true) }
 
+    #if os(iOS)
+    @ViewBuilder
+    private var trailingActions: some View {
+        let showsOptions = destination != .home && destination != .search
+        if let onSearch, showsOptions {
+            // iPad：搜索收进三个点的下拉里，右侧不再单独放放大镜。
+            optionsMenu(standalone: false)
+        } else if let onSearch {
+            SearchToolbarButton(action: onSearch,
+                                identifier: searchIdentifier,
+                                standalone: false)
+        } else if showsOptions {
+            if DeviceInfo.isPad {
+                optionsMenu(standalone: false)
+            } else {
+                sortControls
+            }
+        }
+    }
+
+    #endif
+
     private func optionsMenu(standalone: Bool) -> some View {
         Menu {
+            if let onSearch {
+                Button { onSearch() } label: {
+                    Label("搜索", systemImage: "magnifyingglass")
+                }
+                Divider()
+            }
             Picker("排序", selection: $sort) {
                 ForEach(SortOption.allCases) { option in
                     Text(option.label).tag(option)
