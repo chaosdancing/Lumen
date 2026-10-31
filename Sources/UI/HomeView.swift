@@ -266,7 +266,7 @@ struct BrowseView: View {
     }
 
     private var heroInfoInset: CGFloat? {
-        usesFrostedShelf ? heroHeight * 0.24 : nil
+        usesFrostedShelf ? heroHeight * 0.18 : nil
     }
 
     private var heroFadeStart: Double {
