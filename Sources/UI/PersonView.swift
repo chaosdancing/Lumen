@@ -17,8 +17,6 @@ struct PersonCredit: Identifiable {
     let posterPath: String?
     let isTV: Bool
     let role: String?
-    var sourceID: UUID? = nil
-    var localTarget: DetailTarget? = nil
 }
 
 struct PersonView: View {
@@ -45,7 +43,7 @@ struct PersonView: View {
                                    actionTitle: "重试", action: { Task { await load() } })
                 } else if credits.isEmpty {
                     EmptyStateView(symbol: "film", title: "没有参演记录",
-                                   message: "当前媒体库里没有这位演员的参演作品。",
+                                   message: "TMDB 上这个演员没有可显示的作品。",
                                    actionTitle: nil, action: nil)
                 } else {
                     LazyVGrid(columns: grid, alignment: .leading, spacing: 16) {
@@ -90,10 +88,10 @@ struct PersonView: View {
 
     @ViewBuilder
     private func creditTile(_ credit: PersonCredit) -> some View {
-        let matched = credit.localTarget ?? matchedTarget(for: credit)
+        let matched = matchedTarget(for: credit)
         let content = VStack(alignment: .leading, spacing: 5) {
             CachedRemoteImage(path: CachedImageLoader.tmdbPath(credit.posterPath, size: "w342"),
-                              sourceID: credit.sourceID ?? route.sourceID) {
+                              sourceID: route.sourceID) {
                 placeholder
             }
             .aspectRatio(2.0 / 3.0, contentMode: .fit)
@@ -172,213 +170,7 @@ struct PersonView: View {
 
     // MARK: 数据
 
-    #if os(macOS)
-    /// 演员作品缓存：本地只有一部时，用 TMDB 补齐并落盘；下次直接合并本地缓存。
-    private enum PersonCreditCache {
-        struct Cached: Codable {
-            var tmdbID: Int
-            var title: String
-            var year: String?
-            var posterPath: String?
-            var isTV: Bool
-            var role: String?
-        }
-
-        private static var file: URL {
-            StorePaths.root.appendingPathComponent("person-credits-cache.json")
-        }
-
-        private static var key: String { "\(TMDBClient.language)" }
-
-        static func load(personID: Int) -> [PersonCredit]? {
-            guard let data = try? Data(contentsOf: file),
-                  let map = try? JSONDecoder().decode([String: [Cached]].self, from: data),
-                  let items = map["\(personID)-\(key)"] else { return nil }
-            return items.map { item in
-                PersonCredit(id: "cached-\(item.isTV)-\(item.tmdbID)",
-                             tmdbID: item.tmdbID,
-                             title: item.title,
-                             year: item.year,
-                             posterPath: item.posterPath,
-                             isTV: item.isTV,
-                             role: item.role)
-            }
-        }
-
-        static func save(personID: Int, credits: [PersonCredit]) {
-            var map: [String: [Cached]] = [:]
-            if let data = try? Data(contentsOf: file),
-               let existing = try? JSONDecoder().decode([String: [Cached]].self, from: data) {
-                map = existing
-            }
-            map["\(personID)-\(key)"] = credits.map {
-                Cached(tmdbID: $0.tmdbID,
-                       title: $0.title,
-                       year: $0.year,
-                       posterPath: $0.posterPath,
-                       isTV: $0.isTV,
-                       role: $0.role)
-            }
-            if let data = try? JSONEncoder().encode(map) {
-                try? data.write(to: file, options: .atomic)
-            }
-        }
-    }
-    #endif
-
     private func load() async {
-        #if os(macOS)
-        await loadLocal()
-        #else
-        await loadRemote()
-        #endif
-    }
-
-    #if os(macOS)
-    /// macOS：演员作品先扫描本地库已缓存的 cast；只有一部时用 TMDB 补齐并缓存。
-    private func loadLocal() async {
-        loading = true
-        defer { loading = false }
-        errorText = nil
-
-        func containsPerson(_ cast: [CastMember]) -> Bool {
-            cast.contains { member in
-                if let id = member.tmdbID, id == route.id { return true }
-                return !route.name.isEmpty && member.name == route.name
-            }
-        }
-        func role(in cast: [CastMember]) -> String? {
-            cast.first { member in
-                (member.tmdbID != nil && member.tmdbID == route.id) || member.name == route.name
-            }?.role
-        }
-
-        var list: [PersonCredit] = []
-        var seen = Set<String>()
-
-        for item in store.movieItems {
-            guard let meta = metaStore.metadata(for: item.id),
-                  containsPerson(meta.cast) else { continue }
-            let key = "movie-\(item.id)"
-            guard seen.insert(key).inserted else { continue }
-            let year = meta.releaseDate.flatMap { $0.split(separator: "-").first.map(String.init) }
-                ?? item.year.map(String.init)
-            list.append(PersonCredit(id: key,
-                                     tmdbID: meta.tmdbID ?? route.id,
-                                     title: meta.title ?? item.title,
-                                     year: year,
-                                     posterPath: meta.posterPath,
-                                     isTV: false,
-                                     role: role(in: meta.cast),
-                                     sourceID: item.sourceID,
-                                     localTarget: .movie(item)))
-        }
-
-        for group in store.seriesGroups {
-            guard let poster = group.posterItem else { continue }
-            let meta = metaStore.cachedSeriesMetadata(for: poster)
-                ?? metaStore.metadata(for: poster.id)
-            guard let meta, containsPerson(meta.cast) else { continue }
-            let key = "series-\(group.id)"
-            guard seen.insert(key).inserted else { continue }
-            let year = meta.releaseDate.flatMap { $0.split(separator: "-").first.map(String.init) }
-                ?? poster.year.map(String.init)
-            list.append(PersonCredit(id: key,
-                                     tmdbID: meta.tmdbID ?? route.id,
-                                     title: meta.title ?? group.title,
-                                     year: year,
-                                     posterPath: meta.posterPath,
-                                     isTV: true,
-                                     role: role(in: meta.cast),
-                                     sourceID: poster.sourceID,
-                                     localTarget: .series(group)))
-        }
-
-        credits = list.sorted {
-            if ($0.posterPath != nil) != ($1.posterPath != nil) { return $0.posterPath != nil }
-            if $0.year != $1.year { return ($0.year ?? "") > ($1.year ?? "") }
-            return $0.id < $1.id
-        }
-        if credits.count <= 1 {
-            if let cached = PersonCreditCache.load(personID: route.id) {
-                credits = merge(local: credits, remote: cached)
-            } else if let remote = await fetchFallbackCredits() {
-                PersonCreditCache.save(personID: route.id, credits: remote)
-                credits = merge(local: credits, remote: remote)
-            }
-        }
-
-        AppLog.info("演员页（本地）\(route.name) → \(credits.count) 部")
-    }
-
-    private func merge(local: [PersonCredit], remote: [PersonCredit]) -> [PersonCredit] {
-        var result = local
-        var keys = Set(local.map { "\($0.isTV)-\($0.tmdbID)-\($0.title.lowercased())" })
-        for item in remote {
-            let key = "\(item.isTV)-\(item.tmdbID)-\(item.title.lowercased())"
-            if keys.contains(key) { continue }
-            if local.contains(where: {
-                $0.isTV == item.isTV &&
-                $0.title.lowercased() == item.title.lowercased() &&
-                ($0.year ?? "") == (item.year ?? "")
-            }) { continue }
-            keys.insert(key)
-            result.append(item)
-        }
-        return result.sorted {
-            if ($0.posterPath != nil) != ($1.posterPath != nil) { return $0.posterPath != nil }
-            if $0.year != $1.year { return ($0.year ?? "") > ($1.year ?? "") }
-            return $0.id < $1.id
-        }
-    }
-
-    /// 本地只有当前一部时的降级查询；失败时保持本地结果。
-    private func fetchFallbackCredits() async -> [PersonCredit]? {
-        guard let apiKey = TMDBClient.apiKey else { return nil }
-        var comps = URLComponents(string: "https://api.themoviedb.org/3/person/\(route.id)/combined_credits")!
-        var qs: [URLQueryItem] = [.init(name: "language", value: TMDBClient.language)]
-        if !TMDBClient.isReadAccessToken(apiKey) { qs.append(.init(name: "api_key", value: apiKey)) }
-        comps.queryItems = qs
-        guard let url = comps.url else { return nil }
-        var request = URLRequest(url: url)
-        if TMDBClient.isReadAccessToken(apiKey) {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        }
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
-                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-            let cast = (root["cast"] as? [[String: Any]]) ?? []
-            var seen = Set<String>()
-            var list: [PersonCredit] = []
-            for c in cast {
-                guard let id = c["id"] as? Int else { continue }
-                let isTV = (c["media_type"] as? String) == "tv"
-                let title = (c["title"] as? String) ?? (c["name"] as? String) ?? ""
-                guard !title.isEmpty else { continue }
-                let key = "\(isTV)-\(id)"
-                guard seen.insert(key).inserted else { continue }
-                let date = (c["release_date"] as? String) ?? (c["first_air_date"] as? String)
-                list.append(PersonCredit(id: "tmdb-\(key)",
-                                         tmdbID: id,
-                                         title: title,
-                                         year: date?.prefix(4).description,
-                                         posterPath: c["poster_path"] as? String,
-                                         isTV: isTV,
-                                         role: c["character"] as? String))
-            }
-            AppLog.info("演员页 TMDB 降级 \(route.name) → \(list.count) 部")
-            return list
-        } catch {
-            AppLog.error("演员页 TMDB 降级失败：\(error.logDescription)")
-            return nil
-        }
-    }
-    #endif
-
-    #if !os(macOS)
-    /// iPad/iPhone 继续使用 TMDB 完整作品列表。
-    private func loadRemote() async {
         loading = true
         errorText = nil
         defer { loading = false }
@@ -427,6 +219,7 @@ struct PersonView: View {
                                          isTV: isTV,
                                          role: c["character"] as? String))
             }
+            // 有海报的排前面，再按年份倒序
             credits = list.sorted {
                 if ($0.posterPath != nil) != ($1.posterPath != nil) { return $0.posterPath != nil }
                 if $0.year != $1.year { return ($0.year ?? "") > ($1.year ?? "") }
@@ -439,8 +232,6 @@ struct PersonView: View {
             AppLog.error("演员页失败：\(error.logDescription)")
         }
     }
-    #endif
-
 }
 
 // MARK: - 季海报缩略图（本地 seasonNN-poster.jpg 优先，其次 TMDB）

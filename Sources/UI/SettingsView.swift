@@ -5,7 +5,10 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @ObservedObject private var prefs = Preferences.shared
-    @State private var tab: SettingsTab = .general
+    @ObservedObject private var metaStore = MetadataStore.shared
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var route: SettingsTab?
+    @State private var search = ""
 
     enum SettingsTab: String, CaseIterable, Identifiable {
         case general, sources, sync, playback, playerUI, subtitle, privacy
@@ -25,73 +28,293 @@ struct SettingsView: View {
 
         var symbol: String {
             switch self {
-            case .general:  return "gearshape"
-            case .sources:  return "externaldrive"
-            case .sync:     return "arrow.triangle.2.circlepath"
-            case .playback: return "play.circle"
-            case .playerUI: return "rectangle.inset.filled"
-            case .subtitle: return "captions.bubble"
-            case .privacy:  return "lock.shield"
+            case .general:  return "gearshape.fill"
+            case .sources:  return "externaldrive.fill"
+            case .sync:     return "icloud.fill"
+            case .playback: return "play.circle.fill"
+            case .playerUI: return "rectangle.on.rectangle"
+            case .subtitle: return "captions.bubble.fill"
+            case .privacy:  return "lock.shield.fill"
+            }
+        }
+
+        var gradient: [Color] {
+            switch self {
+            case .general:
+                return [Color(white: 0.58), Color(white: 0.40)]
+            case .sources:
+                return [Color(red: 0.04, green: 0.52, blue: 1.0), Color(red: 0.0, green: 0.40, blue: 0.84)]
+            case .sync:
+                return [Color(red: 0.35, green: 0.78, blue: 0.98), Color(red: 0.0, green: 0.56, blue: 1.0)]
+            case .playback:
+                return [Color(red: 0.20, green: 0.78, blue: 0.35), Color(red: 0.12, green: 0.62, blue: 0.27)]
+            case .playerUI:
+                return [Color(red: 0.69, green: 0.32, blue: 0.87), Color(red: 0.54, green: 0.27, blue: 0.67)]
+            case .subtitle:
+                return [Color(red: 1.0, green: 0.58, blue: 0.0), Color(red: 1.0, green: 0.42, blue: 0.0)]
+            case .privacy:
+                return [Color(red: 1.0, green: 0.23, blue: 0.19), Color(red: 0.84, green: 0.0, blue: 0.08)]
             }
         }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            tabBar
-            Divider().opacity(0.35)
-            ScrollView {
-                VStack(spacing: 0) {
-                    content
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 18)
+        ZStack {
+            settingsBackground.ignoresSafeArea()
+            if let route {
+                detail(route)
+            } else {
+                overview
             }
         }
         #if os(macOS)
-        .frame(minWidth: 700, idealWidth: 780, maxWidth: 880, minHeight: 480, idealHeight: 560)
-        .background(Color(nsColor: .windowBackgroundColor))
-        #else
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 760, idealWidth: 820, maxWidth: 900, minHeight: 560, idealHeight: 620)
         #endif
     }
 
-    // MARK: 顶部标签栏
+    // MARK: 外观
 
-    private var tabBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 4) {
-            ForEach(SettingsTab.allCases) { item in
-                Button {
-                    tab = item
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: item.symbol)
-                            .font(.system(size: 13, weight: .regular))
-                        Text(item.title)
-                            .font(.system(size: 12))
+    private var settingsBackground: Color {
+        colorScheme == .dark ? Color(white: 0.12) : Color(red: 0.96, green: 0.96, blue: 0.965)
+    }
+    private var cardBackground: Color {
+        colorScheme == .dark ? Color(white: 0.17) : .white
+    }
+    private var controlBackground: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05)
+    }
+    private var cardBorder: Color {
+        colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.04)
+    }
+
+    // MARK: 概览
+
+    private var overview: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                searchField
+                stats
+                Text("偏好设置")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+                    .tracking(0.6)
+                    .padding(.leading, 4)
+                    .padding(.top, 2)
+
+                LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 10) {
+                    ForEach(filteredTabs) { item in
+                        settingCard(item)
                     }
+                }
+
+                if filteredTabs.isEmpty {
+                    EmptyStateView(symbol: "magnifyingglass",
+                                   title: "没有匹配的设置",
+                                   message: "换个关键词试试，例如「播放」「字幕」「iCloud」。",
+                                   actionTitle: nil, action: nil)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                }
+
+                footer
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 18)
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Text("设置")
+                .font(.system(size: 21, weight: .bold))
+            Spacer()
+            Button {
+                prefs.appearance = colorScheme == .dark ? "light" : "dark"
+            } label: {
+                Label(colorScheme == .dark ? "浅色" : "深色",
+                      systemImage: colorScheme == .dark ? "sun.max.fill" : "moon.fill")
+                    .font(.system(size: 11.5, weight: .medium))
                     .padding(.horizontal, 10)
-                    .frame(height: 44)
-                    .foregroundStyle(tab == item ? Color.green : Color.secondary)
-                    .background(
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(tab == item ? Color.primary.opacity(0.08) : Color.clear)
-                    )
-                    .contentShape(Rectangle())
+                    .padding(.vertical, 6)
+                    .background(controlBackground, in: Capsule())
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.tertiary)
+            TextField("搜索设置…", text: $search)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+            if !search.isEmpty {
+                Button { search = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
+        .frame(height: 32)
+        .background(controlBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(maxWidth: 360)
+    }
+
+    private var stats: some View {
+        LazyVGrid(columns: statColumns, spacing: 10) {
+            statCard(label: "媒体库",
+                     value: "\(store.library.count)",
+                     sub: "部影片 · \(store.sources.count) 个源",
+                     progress: nil)
+            statCard(label: "已刮削",
+                     value: "\(metaStore.items.count)",
+                     sub: "共 \(store.library.count) 部 · 待刮削 \(max(0, store.library.count - metaStore.items.count))",
+                     progress: store.library.isEmpty ? nil : Double(metaStore.items.count) / Double(store.library.count))
+            statCard(label: "iCloud 同步",
+                     value: store.iCloudProgressAvailable ? "已开启" : "未登录",
+                     sub: store.iCloudProgressAvailable ? "进度自动同步" : "进度仅保存在本机",
+                     progress: nil)
         }
-        .frame(height: 52)
+    }
+
+    private func statCard(label: String, value: String, sub: String, progress: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+                .tracking(0.5)
+            Text(value)
+                .font(.system(size: 22, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            if let progress {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.primary.opacity(0.08))
+                        Capsule().fill(Color.accentColor)
+                            .frame(width: max(3, geo.size.width * min(max(progress, 0), 1)))
+                    }
+                }
+                .frame(height: 4)
+                .padding(.vertical, 2)
+            }
+            Text(sub)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(cardBorder, lineWidth: 0.5)
+        }
+    }
+
+    private func settingCard(_ item: SettingsTab) -> some View {
+        Button {
+            route = item
+        } label: {
+            HStack(alignment: .center, spacing: 12) {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(LinearGradient(colors: item.gradient,
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 36, height: 36)
+                    .overlay {
+                        Image(systemName: item.symbol)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.title)
+                        .font(.system(size: 13.5, weight: .semibold))
+                    Text(summary(for: item))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 6)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(cardBorder, lineWidth: 0.5)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var footer: some View {
+        HStack {
+            Text(versionText)
+            Spacer()
+            Text("无遥测 · 无上报")
+        }
+        .font(.system(size: 10.5))
+        .foregroundStyle(.tertiary)
+        .padding(.top, 10)
+    }
+
+    // MARK: 详情
+
+    private func detail(_ item: SettingsTab) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Button {
+                    route = nil
+                } label: {
+                    Label("返回", systemImage: "chevron.left")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(controlBackground, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                Text(item.title)
+                    .font(.system(size: 18, weight: .bold))
+                Spacer()
+                Color.clear.frame(width: 62, height: 1)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 16)
+            .padding(.bottom, 10)
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    pane(for: item)
+                }
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(cardBorder, lineWidth: 0.5)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
+            }
+        }
     }
 
     @ViewBuilder
-    private var content: some View {
-        switch tab {
+    private func pane(for item: SettingsTab) -> some View {
+        switch item {
         case .general:  GeneralPane()
         case .sources:  SourcesPane()
         case .sync:     SyncPane()
@@ -99,6 +322,95 @@ struct SettingsView: View {
         case .playerUI: PlayerUIPane()
         case .subtitle: SubtitlePane()
         case .privacy:  PrivacyPane()
+        }
+    }
+
+    // MARK: 数据
+
+    private var filteredTabs: [SettingsTab] {
+        let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return SettingsTab.allCases }
+        return SettingsTab.allCases.filter {
+            $0.title.localizedCaseInsensitiveContains(q) || summary(for: $0).localizedCaseInsensitiveContains(q)
+        }
+    }
+
+    private var statColumns: [GridItem] {
+        #if os(macOS)
+        return Array(repeating: GridItem(.flexible(), spacing: 10), count: 3)
+        #else
+        return Array(repeating: GridItem(.flexible(), spacing: 10), count: DeviceInfo.isPad ? 3 : 1)
+        #endif
+    }
+
+    private var cardColumns: [GridItem] {
+        #if os(macOS)
+        return Array(repeating: GridItem(.flexible(), spacing: 10), count: 2)
+        #else
+        if DeviceInfo.isPad { return Array(repeating: GridItem(.flexible(), spacing: 10), count: 2) }
+        return [GridItem(.flexible())]
+        #endif
+    }
+
+    private var versionText: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+            ?? Bundle.main.appVersion
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        if let build, !build.isEmpty { return "Lumen \(short) (Build \(build))" }
+        return "Lumen \(short)"
+    }
+
+    private func summary(for item: SettingsTab) -> String {
+        switch item {
+        case .general:
+            return "显示模式：\(appearanceLabel) · \(languageLabel) · \(sortLabel)排序"
+        case .sources:
+            return "\(store.sources.count) 个媒体源 · 已刮削 \(metaStore.items.count) / \(store.library.count)"
+        case .sync:
+            return store.iCloudProgressAvailable ? "iCloud 已启用 · 进度自动同步" : "iCloud 未启用 · 进度仅在本机"
+        case .playback:
+            return "续播\(prefs.resumePlayback ? "开启" : "关闭") · \(String(format: "%.2fx", prefs.defaultRate)) · 快进 \(Int(prefs.forwardInterval)) 秒"
+        case .playerUI:
+            return "双击暂停 · 控制层 \(String(format: "%.1f", prefs.autoHideControls)) 秒后隐藏"
+        case .subtitle:
+            return "\(subtitleColorLabel) · \(Int(prefs.subtitleScale * 100))% · 描边 \(String(format: "%.1f", prefs.subtitleOutline)) · 距底 \(Int(prefs.subtitleBottomInset))"
+        case .privacy:
+            return "无遥测 · 凭据存钥匙串"
+        }
+    }
+
+    private var appearanceLabel: String {
+        switch prefs.appearance {
+        case "light": return "浅色"
+        case "dark":  return "深色"
+        default:      return "自动"
+        }
+    }
+
+    private var languageLabel: String {
+        switch TMDBClient.language {
+        case "zh-CN": return "简体中文"
+        case "zh-TW": return "繁體中文"
+        case "en-US": return "English"
+        case "ja-JP": return "日本語"
+        default:      return TMDBClient.language
+        }
+    }
+
+    private var sortLabel: String {
+        switch prefs.defaultSort {
+        case "title":  return "名称"
+        case "year":   return "年份"
+        case "rating": return "评分"
+        default:       return "添加日期"
+        }
+    }
+
+    private var subtitleColorLabel: String {
+        switch prefs.subtitleColor {
+        case "yellow": return "黄色"
+        case "cyan":   return "青色"
+        default:       return "白色"
         }
     }
 }
@@ -111,28 +423,22 @@ struct PrefRow<Control: View>: View {
     @ViewBuilder var control: () -> Control
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-        HStack(alignment: .top, spacing: 14) {
-            Text(label)
-                .font(.system(size: 13))
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.trailing)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: 176, alignment: .trailing)
-                .padding(.top, 3)
-            control()
-                .frame(width: 400, alignment: .leading)
-        }
-        .frame(width: 590, alignment: .leading)
-        VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .center, spacing: 14) {
             if !label.isEmpty {
-                Text(label).font(.system(size: 13, weight: .medium))
+                Text(label)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
             }
-            control().frame(maxWidth: .infinity, alignment: .leading)
+            control()
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.30)
         }
-        .frame(maxWidth: 650, alignment: .leading)
-        .padding(.vertical, 6)
     }
 }
 
@@ -143,22 +449,24 @@ struct CheckBox: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(isOn ? Color.green : Color.primary.opacity(0.18))
-                if isOn {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
+            Capsule()
+                .fill(isOn ? Color.green : Color.primary.opacity(0.18))
+                .frame(width: 40, height: 24)
+                .overlay(alignment: isOn ? .trailing : .leading) {
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 20, height: 20)
+                        .padding(2)
+                        .shadow(color: .black.opacity(0.16), radius: 2, y: 1)
                 }
+            if !caption.isEmpty {
+                Text(caption)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
-            .frame(width: 19, height: 19)
-
-            Text(caption)
-                .font(.system(size: 13))
-                .foregroundStyle(.primary)
         }
         .contentShape(Rectangle())
+        .animation(.easeOut(duration: 0.18), value: isOn)
     }
 }
 
