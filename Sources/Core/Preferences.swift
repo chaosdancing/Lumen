@@ -24,6 +24,7 @@ final class Preferences: ObservableObject {
     @Published var subtitleOutline: Double { didSet { d.set(subtitleOutline, forKey: "sub.outline") } }
     @Published var subtitleBottomInset: Double { didSet { d.set(subtitleBottomInset, forKey: "sub.inset") } }
     @Published var subtitleAutoLoad: Bool { didSet { d.set(subtitleAutoLoad, forKey: "sub.autoload") } }
+    @Published var subtitleBackgroundTransparent: Bool { didSet { d.set(subtitleBackgroundTransparent, forKey: "sub.bgTransparent") } }
 
     // MARK: 截图
     @Published var screenshotFormat: String { didSet { d.set(screenshotFormat, forKey: "shot.format") } }
@@ -55,6 +56,7 @@ final class Preferences: ObservableObject {
         subtitleOutline = d.object(forKey: "sub.outline") as? Double ?? 2.0
         subtitleBottomInset = d.object(forKey: "sub.inset") as? Double ?? 58
         subtitleAutoLoad = d.object(forKey: "sub.autoload") as? Bool ?? true
+        subtitleBackgroundTransparent = d.object(forKey: "sub.bgTransparent") as? Bool ?? true
 
         screenshotFormat = d.string(forKey: "shot.format") ?? "jpg"
         screenshotFolder = d.string(forKey: "shot.folder") ?? ""

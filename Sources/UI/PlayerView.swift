@@ -469,7 +469,12 @@ struct PlayerView: View {
                     .shadow(color: .black, radius: prefs.subtitleOutline, x: 0, y: 0)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+                    .background {
+                        if !prefs.subtitleBackgroundTransparent {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(.black.opacity(0.45))
+                        }
+                    }
                     .shadow(color: .black.opacity(0.9), radius: 2, x: 0, y: 1)
                     .padding(.horizontal, 60)
                     .padding(.bottom, controlsVisible ? prefs.subtitleBottomInset + 60 : prefs.subtitleBottomInset)

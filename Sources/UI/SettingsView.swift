@@ -811,6 +811,13 @@ private struct SubtitlePane: View {
                 }
                 .buttonStyle(.plain)
             }
+            PrefRow(label: "字幕背景") {
+                Button { prefs.subtitleBackgroundTransparent.toggle() } label: {
+                    CheckBox(isOn: prefs.subtitleBackgroundTransparent,
+                             caption: prefs.subtitleBackgroundTransparent ? "透明" : "半透明")
+                }
+                .buttonStyle(.plain)
+            }
             PrefRow(label: "字号:") {
                 HStack(spacing: 8) {
                     Slider(value: $prefs.subtitleScale, in: 0.7...2.0, step: 0.05).frame(width: 180)
