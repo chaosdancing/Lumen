@@ -210,6 +210,12 @@ final class AppStore: ObservableObject {
         iCloudProgressAvailable = sync.isAvailable
         // 旧版详细 mpv 日志可能包含 WebDAV Authorization 请求头。
         try? FileManager.default.removeItem(at: StorePaths.root.appendingPathComponent("mpv.log"))
+        // 已有 library 的启动路径：延迟一点从媒体源读回共享进度/收藏/元数据。
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self else { return }
+            await SharedLibrarySync.shared.importExisting(store: self)
+        }
         // 诊断探针不依赖窗口出现，放在这里保证一定执行
         Task { @MainActor in await DebugProbes.run(store: self) }
         #if os(macOS)
@@ -439,6 +445,9 @@ final class AppStore: ObservableObject {
             library.removeAll { $0.sourceID == config.id }
             library.append(contentsOf: merged)
             library.sort { $0.addedAt > $1.addedAt }
+            // 先读 NAS 上的共享元数据/进度，再决定是否还需要 TMDB。
+            await SharedLibrarySync.shared.importAll(source: source, items: merged,
+                                                     config: norm, store: self)
             if let records = progressSync?.currentRecords() { applySyncedProgress(records) }
             scanState[config.id] = ScanState(isScanning: false, found: merged.count, message: nil)
             artworkRevision &+= 1
@@ -642,6 +651,7 @@ final class AppStore: ObservableObject {
         if let item = item(withID: itemID) {
             progressSync?.record(record, for: item)
         }
+        SharedLibrarySync.shared.scheduleState(store: self)
     }
 
     /// 把静默写入的进度补发一次刷新（关闭播放器、进入后台时调用）。
@@ -659,6 +669,7 @@ final class AppStore: ObservableObject {
     func toggleFavorite(_ id: String) {
         if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }
         persistFavorites()
+        SharedLibrarySync.shared.scheduleState(store: self)
     }
 
     func isSeriesFavorite(_ group: SeriesGroup) -> Bool {
@@ -673,6 +684,7 @@ final class AppStore: ObservableObject {
             favorites.insert(representative)
         }
         persistFavorites()
+        SharedLibrarySync.shared.scheduleState(store: self)
     }
 
     func clearProgress(itemID: String) {
@@ -681,6 +693,7 @@ final class AppStore: ObservableObject {
         if let item = item(withID: itemID) {
             progressSync?.clear(item)
         }
+        SharedLibrarySync.shared.scheduleState(store: self)
     }
 
     func flushProgressSync() {
@@ -688,6 +701,29 @@ final class AppStore: ObservableObject {
         flushPendingWrites()
         progressSync?.flush(force: true)
         iCloudProgressAvailable = progressSync?.isAvailable ?? false
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await SharedLibrarySync.shared.flush(store: self)
+        }
+    }
+
+    /// 导入媒体源上的共享进度/收藏；只合并不覆盖本机更新的记录。
+    func applyShared(progress records: [String: PlaybackRecord], favoriteIDs: Set<String>) {
+        guard !records.isEmpty || !favoriteIDs.isEmpty else { return }
+        var progressChanged = false
+        for (itemID, record) in records {
+            if let old = progress[itemID], old.updatedAt >= record.updatedAt { continue }
+            progress[itemID] = record
+            progressChanged = true
+        }
+        let newFavorites = favoriteIDs.subtracting(favorites)
+        if !newFavorites.isEmpty {
+            favorites.formUnion(newFavorites)
+            persistFavorites()
+        }
+        if progressChanged {
+            persistProgress()
+        }
     }
 
     // MARK: 索引

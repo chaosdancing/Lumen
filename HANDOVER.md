@@ -22,6 +22,20 @@
 
 以下为本轮合并前的 main 交接记录（历史）。
 
+## NAS 共享库分支（2026-10-31）
+
+- 分支：`feature/nas-shared-library`，基于 `8ce1bce`（已合入 iPad 详情/轮播等 main 改动）。
+- 每个可写媒体源根目录 `.lumen-cache/` 增加：
+  - `library-metadata.json`：可覆盖的刮削 catalog；扫描时导入，完整条目直接跳过 TMDB；
+  - `library-state.json`：按源内相对路径保存进度/收藏；播放中 15 秒合并写，关闭时 flush。
+- 设置 → 同步增加两个开关（默认开启）和共享文件说明。
+- 支持本地文件夹 / WebDAV；Emby/Jellyfin、只读 HTTP 跳过。
+- 已知限制：取消收藏/清空进度没有 tombstone；并发写 last-writer-wins；共享格式是 JSON，不是 NFO。
+- 设计细节见 `Docs/NAS_SHARED_LIBRARY.md`。
+- 验证：iOS Simulator / macOS 签名构建通过；UnitTests（含 SharedLibrarySyncTests）通过；iPad UI 测试通过。
+
+以下为 main 原交接记录。
+
 > 更新时间：2026-10-31  
 > 分支：`main`（已推送，工作区干净）  
 > 最近提交：`eb4ddf6 macOS 去筛选箭头；iPad 顶栏去框、搜索收进更多、首页上移`  

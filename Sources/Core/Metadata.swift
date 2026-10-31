@@ -135,6 +135,33 @@ final class MetadataStore: ObservableObject {
         return nil
     }
 
+    /// 从媒体源 `.lumen-cache/library-metadata.json` 导入共享刮削结果。
+    /// 直接填充 remoteCache + 本机缓存，load() 会认为“TMDB 已有数据”而跳过网络请求。
+    func importSharedCatalog(_ catalog: SharedMetadataCatalog, items: [MediaItem],
+                             config: MediaSourceConfig) {
+        guard Preferences.shared.shareMetadataToSource else { return }
+        let scope = fingerprint(config)
+        var imported = false
+        for item in items {
+            guard let entry = catalog.entries[item.path], entry.isComplete else { continue }
+            // 本机已有更新的刮削结果时不要被 NAS 上的旧文件覆盖。
+            if let local = metadata(for: item.id), local.updatedAt >= entry.updatedAt { continue }
+            let seriesKey = Self.seriesKey(for: item)
+            if let key = seriesKey, let localSeries = cachedSeriesMetadata(for: item),
+               localSeries.updatedAt >= entry.updatedAt { continue }
+            let prefix = seriesKey.map { "tmdb-series#\($0)" } ?? "tmdb-item#\(item.id)"
+            let identity = "\(prefix)#\(TMDBClient.language)#\(scope)"
+            let value = entry.metadata(for: item, sourceFingerprint: scope,
+                                       cacheVersion: Self.cacheVersion,
+                                       preferNFO: Preferences.shared.preferNFO,
+                                       language: TMDBClient.language)
+            remoteCache[identity] = value
+            if let seriesKey { seriesCache[seriesKey] = value }
+            imported = true
+        }
+        if imported { revision &+= 1 }
+    }
+
     func metadata(for itemID: String) -> MediaMetadata? {
         guard let sourceID = UUID(uuidString: String(itemID.split(separator: "#").first ?? "")),
               let config = sourceConfig(for: sourceID), let meta = items[itemID],
@@ -642,6 +669,9 @@ final class MetadataStore: ObservableObject {
         items[item.id] = meta
         if let seriesKey { seriesCache[seriesKey] = meta }
         revision &+= 1
+        if Preferences.shared.shareMetadataToSource {
+            SharedLibrarySync.shared.scheduleMetadata(store: store, sourceID: item.sourceID)
+        }
         return true
     }
 
