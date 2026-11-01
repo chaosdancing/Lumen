@@ -178,9 +178,9 @@ struct SettingsView: View {
                      value: "\(metaStore.items.count)",
                      sub: "共 \(store.library.count) 部 · 待刮削 \(max(0, store.library.count - metaStore.items.count))",
                      progress: store.library.isEmpty ? nil : Double(metaStore.items.count) / Double(store.library.count))
-            statCard(label: "iCloud 同步",
-                     value: store.iCloudProgressAvailable ? "已开启" : "未登录",
-                     sub: store.iCloudProgressAvailable ? "进度自动同步" : "进度仅保存在本机",
+            statCard(label: "NAS 同步",
+                     value: nasSyncStatus,
+                     sub: nasSyncSubtitle,
                      progress: nil)
         }
     }
@@ -214,6 +214,8 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
+        // 三张概览卡保持同一高度，第二条带进度条的卡不再把整行撑高。
+        .frame(height: 118, alignment: .topLeading)
         .background(cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(cardBorder, lineWidth: 0.5)
@@ -327,6 +329,30 @@ struct SettingsView: View {
 
     // MARK: 数据
 
+    private var hasWritableSource: Bool {
+        store.sources.contains { $0.kind == .local || $0.kind == .webdav }
+    }
+
+    private var nasSyncEnabled: Bool {
+        guard hasWritableSource else { return false }
+        return prefs.shareMetadataToSource || prefs.sharePlaybackStateToSource
+    }
+
+    private var nasSyncStatus: String {
+        guard hasWritableSource else { return "未开启" }
+        return nasSyncEnabled ? "已开启" : "未开启"
+    }
+
+    private var nasSyncSubtitle: String {
+        guard hasWritableSource else { return "没有可写媒体源" }
+        switch (prefs.shareMetadataToSource, prefs.sharePlaybackStateToSource) {
+        case (true, true):  return "元数据 · 进度 · 收藏"
+        case (true, false): return "仅共享元数据"
+        case (false, true): return "仅共享进度/收藏"
+        default:            return "仅保存在本机"
+        }
+    }
+
     private var filteredTabs: [SettingsTab] {
         let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return SettingsTab.allCases }
@@ -367,9 +393,8 @@ struct SettingsView: View {
         case .sources:
             return "\(store.sources.count) 个媒体源 · 已刮削 \(metaStore.items.count) / \(store.library.count)"
         case .sync:
-            let shared = prefs.shareMetadataToSource || prefs.sharePlaybackStateToSource
-            let iCloud = store.iCloudProgressAvailable ? "iCloud 已启用" : "iCloud 未启用"
-            return shared ? "\(iCloud) · 共享到媒体源" : "\(iCloud) · 仅本机"
+            let nas = nasSyncEnabled ? "NAS 同步已开启" : "NAS 同步未开启"
+            return nas + (store.iCloudProgressAvailable ? " · iCloud 已启用" : "")
         case .playback:
             return "续播\(prefs.resumePlayback ? "开启" : "关闭") · \(String(format: "%.2fx", prefs.defaultRate)) · 快进 \(Int(prefs.forwardInterval)) 秒"
         case .playerUI:
