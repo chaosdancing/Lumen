@@ -83,11 +83,13 @@ final class SharedLibrarySyncTests: XCTestCase {
         state.updatedAt = date
         state.progress["movies/a.mkv"] = SharedProgress(position: 42, duration: 100, updatedAt: date)
         state.favorites["movies/a.mkv"] = SharedFavorite(favorite: true, updatedAt: date)
+        state.favorites["movies/b.mkv"] = SharedFavorite(favorite: false, updatedAt: date)
 
         let decoded = try decoder.decode(SharedLibraryState.self, from: encoder.encode(state))
         XCTAssertEqual(decoded.schema, 1)
         XCTAssertEqual(decoded.progress["movies/a.mkv"]?.position, 42)
         XCTAssertEqual(decoded.progress["movies/a.mkv"]?.duration, 100)
         XCTAssertEqual(decoded.favorites["movies/a.mkv"]?.favorite, true)
+        XCTAssertEqual(decoded.favorites["movies/b.mkv"]?.favorite, false)
     }
 }

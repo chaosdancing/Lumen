@@ -87,20 +87,20 @@ struct SharedMetadataEntry: Codable {
 
 /// 写入每个媒体源根目录 `.lumen-cache/library-state.json`。
 /// key 使用源内相对路径，不同安装/不同机器只要扫描到同一目录就能对应。
-struct SharedLibraryState: Codable {
+struct SharedLibraryState: Codable, Equatable {
     var schema = 1
     var updatedAt = Date()
     var progress: [String: SharedProgress] = [:]
     var favorites: [String: SharedFavorite] = [:]
 }
 
-struct SharedProgress: Codable {
+struct SharedProgress: Codable, Equatable {
     var position: Double
     var duration: Double
     var updatedAt: Date
 }
 
-struct SharedFavorite: Codable {
+struct SharedFavorite: Codable, Equatable {
     var favorite: Bool
     var updatedAt: Date
 }
@@ -193,7 +193,7 @@ final class SharedLibrarySync {
               let state = try? decoder.decode(SharedLibraryState.self, from: data),
               state.schema == 1 else { return }
         var records: [String: PlaybackRecord] = [:]
-        var favoriteIDs = Set<String>()
+        var favoriteUpdates: [String: SharedFavorite] = [:]
         for item in items {
             if let progress = state.progress[item.path] {
                 let local = store.record(for: item.id)
@@ -204,11 +204,11 @@ final class SharedLibrarySync {
                                                       updatedAt: progress.updatedAt)
                 }
             }
-            if state.favorites[item.path]?.favorite == true {
-                favoriteIDs.insert(item.id)
+            if let favorite = state.favorites[item.path] {
+                favoriteUpdates[item.id] = favorite
             }
         }
-        store.applyShared(progress: records, favoriteIDs: favoriteIDs)
+        store.applyShared(progress: records, favoriteUpdates: favoriteUpdates)
         // 把本机已有、但媒体源上还没有的进度/收藏补写回去；内容相同会在 writeState 内跳过。
         scheduleState(store: store)
     }
@@ -294,7 +294,10 @@ final class SharedLibrarySync {
             state = existing
             existingData = data
         }
+        let oldProgress = state.progress
+        let oldFavorites = state.favorites
         let now = Date()
+
         for item in store.library where item.sourceID == config.id {
             if let record = store.record(for: item.id) {
                 if state.progress[item.path] == nil || record.updatedAt > state.progress[item.path]!.updatedAt {
@@ -304,22 +307,44 @@ final class SharedLibrarySync {
                 }
             }
         }
+
+        func mergeFavorite(_ path: String, favorite: Bool, updatedAt: Date) {
+            if let existing = state.favorites[path], existing.updatedAt > updatedAt { return }
+            state.favorites[path] = SharedFavorite(favorite: favorite, updatedAt: updatedAt)
+        }
+
+        for item in store.library where item.sourceID == config.id {
+            let favorite = store.isFavorite(item.id)
+            if favorite {
+                mergeFavorite(item.path, favorite: true,
+                              updatedAt: store.favoriteStamp(for: item.id) ?? .distantPast)
+            } else if let stamp = store.favoriteStamp(for: item.id) {
+                // 取消收藏的 tombstone：只有明确记录过修改时间的才写 false，避免误删别的设备。
+                mergeFavorite(item.path, favorite: false, updatedAt: stamp)
+            }
+        }
         for group in store.seriesGroups {
             let groupItems = group.items.filter { $0.sourceID == config.id }
-            guard !groupItems.isEmpty, store.isSeriesFavorite(group) else { continue }
-            // 剧集收藏在本地只用任意一集代表；写入共享时标全部分集，其他设备才能识别整部剧。
-            for item in groupItems {
-                state.favorites[item.path] = SharedFavorite(favorite: true, updatedAt: now)
+            guard !groupItems.isEmpty else { continue }
+            let favorite = store.isSeriesFavorite(group)
+            let stamp = groupItems.compactMap { store.favoriteStamp(for: $0.id) }.max() ?? .distantPast
+            if favorite {
+                for item in groupItems {
+                    mergeFavorite(item.path, favorite: true, updatedAt: stamp)
+                }
+            } else {
+                for item in groupItems {
+                    if let stamp = store.favoriteStamp(for: item.id) {
+                        mergeFavorite(item.path, favorite: false, updatedAt: stamp)
+                    }
+                }
             }
         }
-        for item in store.library where item.sourceID == config.id && item.kind == .movie {
-            if store.isFavorite(item.id) {
-                state.favorites[item.path] = SharedFavorite(favorite: true, updatedAt: now)
-            }
-        }
+
+        guard state.progress != oldProgress || state.favorites != oldFavorites,
+              !state.progress.isEmpty || !state.favorites.isEmpty else { return }
         state.updatedAt = now
-        guard !state.progress.isEmpty || !state.favorites.isEmpty,
-              let data = try? encoder.encode(state) else { return }
+        guard let data = try? encoder.encode(state) else { return }
         if data == existingData { return }
         do {
             try await writable.writeShared(data, path: Self.statePath)

@@ -152,6 +152,7 @@ enum StorePaths {
     static var library: URL { root.appendingPathComponent("library.json") }
     static var progress: URL { root.appendingPathComponent("progress.json") }
     static var favorites: URL { root.appendingPathComponent("favorites.json") }
+    static var favoriteStamps: URL { root.appendingPathComponent("favorites-stamps.json") }
 }
 
 // MARK: - 应用状态
@@ -186,6 +187,8 @@ final class AppStore: ObservableObject {
     private let ioQueue = DispatchQueue(label: "lumen.store.io", qos: .utility)
     private var progressWriteScheduled = false
     @Published private(set) var favorites: Set<String> = []
+    /// 收藏的本地修改时间，用于和媒体源共享状态做 last-write-wins。
+    private var favoriteStamps: [String: Date] = [:]
     @Published private(set) var iCloudProgressAvailable = false
     private var progressSync: ProgressCloudSync?
     @Published private(set) var artworkRevision = 0
@@ -272,6 +275,10 @@ final class AppStore: ObservableObject {
            let list = try? decoder.decode([String].self, from: data) {
             favorites = Set(list)
         }
+        if let data = try? Data(contentsOf: StorePaths.favoriteStamps),
+           let map = try? decoder.decode([String: Date].self, from: data) {
+            favoriteStamps = map
+        }
     }
 
     nonisolated private static func write<T: Encodable>(_ value: T, to url: URL) {
@@ -289,11 +296,13 @@ final class AppStore: ObservableObject {
         let library = library
         let progress = progress
         let favorites = Array(favorites)
+        let favoriteStamps = favoriteStamps
         ioQueue.async {
             Self.write(sanitized, to: StorePaths.sources)
             Self.write(library, to: StorePaths.library)
             Self.write(progress, to: StorePaths.progress)
             Self.write(favorites, to: StorePaths.favorites)
+            Self.write(favoriteStamps, to: StorePaths.favoriteStamps)
         }
     }
 
@@ -312,7 +321,11 @@ final class AppStore: ObservableObject {
     /// 收藏只写 favorites.json，不再连带重写 676 KB 的 library.json。
     private func persistFavorites() {
         let snapshot = Array(favorites)
-        ioQueue.async { Self.write(snapshot, to: StorePaths.favorites) }
+        let stamps = favoriteStamps
+        ioQueue.async {
+            Self.write(snapshot, to: StorePaths.favorites)
+            Self.write(stamps, to: StorePaths.favoriteStamps)
+        }
     }
 
     /// 进入后台 / 关闭播放器时调用：把排队中的写盘同步刷完，避免被系统挂起时丢数据。
@@ -668,9 +681,12 @@ final class AppStore: ObservableObject {
 
     func toggleFavorite(_ id: String) {
         if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }
+        favoriteStamps[id] = Date()
         persistFavorites()
         SharedLibrarySync.shared.scheduleState(store: self)
     }
+
+    func favoriteStamp(for itemID: String) -> Date? { favoriteStamps[itemID] }
 
     func isSeriesFavorite(_ group: SeriesGroup) -> Bool {
         group.items.contains { favorites.contains($0.id) }
@@ -678,6 +694,8 @@ final class AppStore: ObservableObject {
 
     func toggleSeriesFavorite(_ group: SeriesGroup) {
         let itemIDs = Set(group.items.map(\.id))
+        let now = Date()
+        for id in itemIDs { favoriteStamps[id] = now }
         if !favorites.isDisjoint(with: itemIDs) {
             favorites.subtract(itemIDs)
         } else if let representative = itemIDs.min() {
@@ -707,18 +725,37 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// 从媒体源重新读取共享进度/收藏（App 回到前台、手动同步时调用）。
+    func refreshSharedState() async {
+        guard Preferences.shared.sharePlaybackStateToSource
+                || Preferences.shared.shareMetadataToSource else { return }
+        await SharedLibrarySync.shared.importExisting(store: self)
+    }
+
     /// 导入媒体源上的共享进度/收藏；只合并不覆盖本机更新的记录。
-    func applyShared(progress records: [String: PlaybackRecord], favoriteIDs: Set<String>) {
-        guard !records.isEmpty || !favoriteIDs.isEmpty else { return }
+    func applyShared(progress records: [String: PlaybackRecord],
+                     favoriteUpdates: [String: SharedFavorite]) {
+        guard !records.isEmpty || !favoriteUpdates.isEmpty else { return }
         var progressChanged = false
         for (itemID, record) in records {
             if let old = progress[itemID], old.updatedAt >= record.updatedAt { continue }
             progress[itemID] = record
             progressChanged = true
         }
-        let newFavorites = favoriteIDs.subtracting(favorites)
-        if !newFavorites.isEmpty {
-            favorites.formUnion(newFavorites)
+        var favoritesChanged = false
+        var stampsChanged = false
+        for (itemID, update) in favoriteUpdates {
+            if let local = favoriteStamps[itemID], local >= update.updatedAt { continue }
+            favoriteStamps[itemID] = update.updatedAt
+            stampsChanged = true
+            if update.favorite {
+                if !favorites.contains(itemID) { favorites.insert(itemID); favoritesChanged = true }
+            } else if favorites.contains(itemID) {
+                favorites.remove(itemID)
+                favoritesChanged = true
+            }
+        }
+        if favoritesChanged || stampsChanged {
             persistFavorites()
         }
         if progressChanged {

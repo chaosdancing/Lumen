@@ -30,7 +30,7 @@
   - `library-state.json`：按源内相对路径保存进度/收藏；播放中 15 秒合并写，关闭时 flush。
 - 设置 → 同步增加两个开关（默认开启）和共享文件说明。
 - 支持本地文件夹 / WebDAV；Emby/Jellyfin、只读 HTTP 跳过。
-- 已知限制：取消收藏/清空进度没有 tombstone；并发写 last-writer-wins；共享格式是 JSON，不是 NFO。
+- 收藏取消通过 `favorite:false + updatedAt` tombstone 同步，另一台设备启动/扫描/回前台/立即同步时应用；清空进度还没有 tombstone；并发写 last-writer-wins；共享格式是 JSON，不是 NFO。
 - 设计细节见 `Docs/NAS_SHARED_LIBRARY.md`。
 - 验证：iOS Simulator / macOS 签名构建通过；UnitTests（含 SharedLibrarySyncTests）通过；iPad UI 测试通过。
 

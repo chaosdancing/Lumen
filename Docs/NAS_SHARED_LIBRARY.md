@@ -54,10 +54,13 @@
 ```
 
 - 进度按 `updatedAt` 合并：共享记录比本机新才采用。
-- 收藏按路径合并；剧集收藏会把该剧所有分集路径都写入共享文件，避免“代表分集”在不同安装里变化。
+- 收藏按路径 + `updatedAt` 合并；剧集收藏会把该剧所有分集路径都写入共享文件，避免“代表分集”在不同安装里变化。
 - 播放中约 15 秒合并写一次，关闭播放器/进入后台时立即 flush；元数据 2 秒合并窗口。
 - 启动/扫描导入后会调度一次补写，把本机已有、媒体源上还没有的收藏/进度推回去；如果内容完全一致则跳过写盘。
-- 收藏目前是“并集”合并，**取消收藏不会跨设备删除**（还没有 tombstone 设计）；清空进度也不会删除另一台机器的共享记录。后续可补 tombstone / 每项 updatedAt。
+- App 回到前台、或设置 → 同步点「立即同步」时会重新读取媒体源，应用另一台设备写入的收藏取消/新增。
+- 收藏取消已通过 `favorite: false + updatedAt` tombstone 同步；另一台设备在启动/扫描/回前台/立即同步时应用删除。
+- 清空进度还没有 tombstone，不会删除另一台机器的共享记录。
+- 本地 `favorites-stamps.json` 用于冲突判断；如果删除该文件，已有收藏会以较旧时间戳补写。
 
 ## 4. 收藏同步细节
 
@@ -83,7 +86,7 @@
 | `Sources/Core/SharedLibrarySync.swift` | catalog/state 模型、合并、调度、写入 |
 | `Sources/Core/Sources.swift` | `WritableMediaSource.writeShared`（本地原子替换 / WebDAV PUT） |
 | `Sources/Core/Metadata.swift` | `importSharedCatalog`、TMDB 跳过、commit 调度 |
-| `Sources/Core/Store.swift` | 扫描导入、进度/收藏合并、record/favorite 调度、flush |
+| `Sources/Core/Store.swift` | 扫描导入、进度/收藏合并、收藏时间戳、record/favorite 调度、flush |
 | `Sources/UI/SettingsView.swift` | 同步开关与路径展示 |
 | `Tests/Unit/SharedLibrarySyncTests.swift` | 编解码与本地可覆盖写入测试 |
 
@@ -92,5 +95,6 @@
 1. 共享文件是 Lumen 自有 JSON，不是 Kodi/Emby 能直接识别的 NFO；如需跨软件共享，下一步增加可选的 NFO 导出（写回影片目录）。
 2. 收藏取消、进度清除还没有 tombstone；当前只增不删。
 3. 多设备同时写同一个 JSON 时是 last-writer-wins；已有“先读再合并”，但没有文件锁/ETag 冲突重试。
-4. 剧集被多个目录重复扫描时，catalog 以每个分集路径为 key，体积会偏大；后续可折叠成 series + episode 两级。
-5. 共享文件写入失败只记日志，不会阻塞播放；设置页暂未显示最近一次同步时间/错误。
+4. 清空播放进度还没有 tombstone；清空后另一台机器可能仍保留旧进度，直到本机再次播放覆盖。
+5. 剧集被多个目录重复扫描时，catalog 以每个分集路径为 key，体积会偏大；后续可折叠成 series + episode 两级。
+6. 共享文件写入失败只记日志，不会阻塞播放；设置页暂未显示最近一次同步时间/错误。

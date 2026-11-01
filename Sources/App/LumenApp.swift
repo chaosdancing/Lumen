@@ -80,6 +80,7 @@ struct LumenApp: App {
             .environmentObject(artwork)
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { store.flushProgressSync() }
+                if phase == .active { Task { await store.refreshSharedState() } }
             }
             #if os(macOS)
             .frame(minWidth: 960, minHeight: 620)

@@ -699,6 +699,7 @@ private struct SyncPane: View {
                         .foregroundStyle(store.iCloudProgressAvailable ? Color.green : .secondary)
                     Button("立即同步") {
                         store.flushProgressSync()
+                        Task { await store.refreshSharedState() }
                     }
                     .controlSize(.small)
                 }
