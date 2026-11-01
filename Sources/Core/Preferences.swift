@@ -39,6 +39,10 @@ final class Preferences: ObservableObject {
     @Published var appearance: String { didSet { d.set(appearance, forKey: "ui.appearance") } }
     @Published var preferLocalPoster: Bool { didSet { d.set(preferLocalPoster, forKey: "meta.localPoster") } }
     @Published var preferNFO: Bool { didSet { d.set(preferNFO, forKey: "meta.preferNFO") } }
+
+    // MARK: 媒体源共享（NAS .lumen-cache）
+    @Published var shareMetadataToSource: Bool { didSet { d.set(shareMetadataToSource, forKey: "sync.metadataSource") } }
+    @Published var sharePlaybackStateToSource: Bool { didSet { d.set(sharePlaybackStateToSource, forKey: "sync.stateSource") } }
     @Published var posterColumns: Int { didSet { d.set(posterColumns, forKey: "ui.columns") } }
 
     private init() {
@@ -70,6 +74,8 @@ final class Preferences: ObservableObject {
         appearance = d.string(forKey: "ui.appearance") ?? "auto"
         preferLocalPoster = d.object(forKey: "meta.localPoster") as? Bool ?? true
         preferNFO = d.object(forKey: "meta.preferNFO") as? Bool ?? true
+        shareMetadataToSource = d.object(forKey: "sync.metadataSource") as? Bool ?? true
+        sharePlaybackStateToSource = d.object(forKey: "sync.stateSource") as? Bool ?? true
     }
 
     var resolvedScreenshotFolder: URL {

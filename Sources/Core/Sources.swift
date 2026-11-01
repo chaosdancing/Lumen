@@ -28,6 +28,9 @@ extension MediaSource {
 
 protocol WritableMediaSource: MediaSource {
     func writeCache(_ data: Data, path: String) async throws
+    /// 可覆盖的共享文件（.lumen-cache 下的 library-metadata.json / library-state.json）。
+    /// 与不可覆盖的缓存不同，多个设备会更新同一个文件。
+    func writeShared(_ data: Data, path: String) async throws
 }
 
 enum CacheWriteError: LocalizedError {
@@ -168,6 +171,19 @@ final class LocalMediaSource: WritableMediaSource, @unchecked Sendable {
             if errno == EEXIST, (try? Data(contentsOf: url)) == data { return }
             throw CacheWriteError.conflict
         }
+    }
+
+    func writeShared(_ data: Data, path: String) async throws {
+        try CacheWriteError.validate(path)
+        try Task.checkCancellation()
+        let directory = root.appendingPathComponent(".lumen-cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+        guard directory.resolvingSymlinksInPath().standardizedFileURL.path == resolvedRoot + "/.lumen-cache" else {
+            throw CacheWriteError.invalidPath
+        }
+        let url = root.appendingPathComponent(path)
+        try data.write(to: url, options: .atomic)
     }
 }
 
@@ -482,6 +498,33 @@ final class WebDAVMediaSource: WritableMediaSource, @unchecked Sendable {
             return
         }
         guard put.statusCode == 201 || put.statusCode == 204 else { throw SourceError.badResponse(put.statusCode) }
+    }
+
+    func writeShared(_ data: Data, path: String) async throws {
+        try CacheWriteError.validate(path)
+        try Task.checkCancellation()
+        var directory = rootURL
+        directory.appendPathComponent(".lumen-cache", isDirectory: true)
+        var mkdir = URLRequest(url: directory)
+        mkdir.httpMethod = "MKCOL"
+        authorize(&mkdir)
+        let (_, mkdirResponse) = try await session.data(for: mkdir)
+        guard let m = mkdirResponse as? HTTPURLResponse,
+              m.statusCode == 201 || m.statusCode == 405 else {
+            throw SourceError.badResponse((mkdirResponse as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+        try Task.checkCancellation()
+        let url = directory.appendingPathComponent((path as NSString).lastPathComponent)
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.httpBody = data
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse,
+              [200, 201, 204].contains(http.statusCode) else {
+            throw SourceError.badResponse((response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
     }
 }
 

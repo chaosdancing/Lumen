@@ -178,9 +178,9 @@ struct SettingsView: View {
                      value: "\(metaStore.items.count)",
                      sub: "共 \(store.library.count) 部 · 待刮削 \(max(0, store.library.count - metaStore.items.count))",
                      progress: store.library.isEmpty ? nil : Double(metaStore.items.count) / Double(store.library.count))
-            statCard(label: "iCloud 同步",
-                     value: store.iCloudProgressAvailable ? "已开启" : "未登录",
-                     sub: store.iCloudProgressAvailable ? "进度自动同步" : "进度仅保存在本机",
+            statCard(label: "NAS 同步",
+                     value: nasSyncStatus,
+                     sub: nasSyncSubtitle,
                      progress: nil)
         }
     }
@@ -214,6 +214,8 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
+        // 三张概览卡保持同一高度，第二条带进度条的卡不再把整行撑高。
+        .frame(height: 118, alignment: .topLeading)
         .background(cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(cardBorder, lineWidth: 0.5)
@@ -327,6 +329,30 @@ struct SettingsView: View {
 
     // MARK: 数据
 
+    private var hasWritableSource: Bool {
+        store.sources.contains { $0.kind == .local || $0.kind == .webdav }
+    }
+
+    private var nasSyncEnabled: Bool {
+        guard hasWritableSource else { return false }
+        return prefs.shareMetadataToSource || prefs.sharePlaybackStateToSource
+    }
+
+    private var nasSyncStatus: String {
+        guard hasWritableSource else { return "未开启" }
+        return nasSyncEnabled ? "已开启" : "未开启"
+    }
+
+    private var nasSyncSubtitle: String {
+        guard hasWritableSource else { return "没有可写媒体源" }
+        switch (prefs.shareMetadataToSource, prefs.sharePlaybackStateToSource) {
+        case (true, true):  return "元数据 · 进度 · 收藏"
+        case (true, false): return "仅共享元数据"
+        case (false, true): return "仅共享进度/收藏"
+        default:            return "仅保存在本机"
+        }
+    }
+
     private var filteredTabs: [SettingsTab] {
         let q = search.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return SettingsTab.allCases }
@@ -367,7 +393,8 @@ struct SettingsView: View {
         case .sources:
             return "\(store.sources.count) 个媒体源 · 已刮削 \(metaStore.items.count) / \(store.library.count)"
         case .sync:
-            return store.iCloudProgressAvailable ? "iCloud 已启用 · 进度自动同步" : "iCloud 未启用 · 进度仅在本机"
+            let nas = nasSyncEnabled ? "NAS 同步已开启" : "NAS 同步未开启"
+            return nas + (store.iCloudProgressAvailable ? " · iCloud 已启用" : "")
         case .playback:
             return "续播\(prefs.resumePlayback ? "开启" : "关闭") · \(String(format: "%.2fx", prefs.defaultRate)) · 快进 \(Int(prefs.forwardInterval)) 秒"
         case .playerUI:
@@ -665,23 +692,57 @@ private struct SourcesPane: View {
 
 private struct SyncPane: View {
     @EnvironmentObject private var store: AppStore
+    @ObservedObject private var prefs = Preferences.shared
 
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: store.iCloudProgressAvailable ? "icloud" : "icloud.slash")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(store.iCloudProgressAvailable ? Color.green : Color.secondary)
-            Text(store.iCloudProgressAvailable ? "观看记录已接入 iCloud" : "iCloud 观看记录暂不可用")
-                .font(.system(size: 13, weight: .medium))
-            Text("播放进度先保存在本机，再同步到使用同一 Apple 账户的 Mac 和 iPad。两端需扫描到同一影片；其他资料仍保存在本机。")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
-            Button("立即同步") { store.flushProgressSync() }
-                .padding(.top, 8)
+        VStack(spacing: 0) {
+            PrefRow(label: "元数据写入媒体源") {
+                Button { prefs.shareMetadataToSource.toggle() } label: {
+                    CheckBox(isOn: prefs.shareMetadataToSource,
+                             caption: prefs.shareMetadataToSource ? "共享" : "仅本机")
+                }
+                .buttonStyle(.plain)
+            }
+            PrefRow(label: "观看进度 / 收藏写入媒体源") {
+                Button { prefs.sharePlaybackStateToSource.toggle() } label: {
+                    CheckBox(isOn: prefs.sharePlaybackStateToSource,
+                             caption: prefs.sharePlaybackStateToSource ? "共享" : "仅本机")
+                }
+                .buttonStyle(.plain)
+            }
+            PrefRow(label: "共享文件") {
+                Text(".lumen-cache/library-metadata.json · library-state.json")
+                    .font(.system(size: 11).monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            PrefRow(label: "iCloud 观看记录") {
+                HStack(spacing: 8) {
+                    Text(store.iCloudProgressAvailable ? "已启用" : "未启用")
+                        .font(.system(size: 12))
+                        .foregroundStyle(store.iCloudProgressAvailable ? Color.green : .secondary)
+                    Button("立即同步") {
+                        store.flushProgressSync()
+                        Task { await store.refreshSharedState() }
+                    }
+                    .controlSize(.small)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label("写入媒体源后，其他 Mac / iPad 扫描同一目录会直接复用元数据和观看记录，不需要重新刮削。",
+                      systemImage: "externaldrive.badge.icloud")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                Text("关闭后只保存在本机；清空媒体源上的 .lumen-cache 不会删除本地记录。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
         }
-        .padding(.top, 60)
     }
 }
 

@@ -368,11 +368,6 @@ struct BrowseView: View {
             default:      sort = .added
             }
         }
-        .task(id: destination) {
-            if [.genres, .years, .ratings, .certifications].contains(destination) {
-                await metaStore.scrapeAll(items: store.library, in: store)
-            }
-        }
         .toolbar {
             #if os(macOS)
             if destination == .home {

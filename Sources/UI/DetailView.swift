@@ -673,72 +673,81 @@ struct MediaDetailView: View {
         }
     }
 
-    /// 季选择：横排胶囊可点，季数多时两侧出箭头
+    /// 季选择：能全宽放下就一次展示全部；放不下时才出现两侧箭头，箭头只滚动列表，不直接切季。
     private func seasonPicker(_ group: SeriesGroup, current: Int) -> some View {
+        ViewThatFits(in: .horizontal) {
+            seasonButtons(group, current: current)
+            scrollableSeasonButtons(group, current: current)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func seasonButtons(_ group: SeriesGroup, current: Int) -> some View {
+        HStack(spacing: 6) {
+            ForEach(group.seasons, id: \.self) { season in
+                seasonButton(season, current: current)
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func seasonButton(_ season: Int, current: Int) -> some View {
+        Button {
+            withAnimation(.smooth(duration: 0.2)) { selectedSeason = season }
+        } label: {
+            Text("第 \(season) 季")
+                .font(.system(size: 12.5, weight: current == season ? .semibold : .regular))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(current == season ? Color.primary.opacity(0.14) : Color.primary.opacity(0.04))
+                )
+                .foregroundStyle(current == season ? Color.primary : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .id(season)
+    }
+
+    private func scrollableSeasonButtons(_ group: SeriesGroup, current: Int) -> some View {
         ScrollViewReader { proxy in
             HStack(spacing: 6) {
-                if group.seasons.count > 5 {
-                    Button {
-                        stepSeason(proxy, group: group, forward: false)
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 11, weight: .semibold))
-                            .frame(width: 18, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                Button {
+                    scrollSeasons(proxy, group: group, toEnd: false)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 18, height: 22)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("查看前面的季度")
 
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(group.seasons, id: \.self) { s in
-                            Button {
-                                withAnimation(.smooth(duration: 0.2)) { selectedSeason = s }
-                            } label: {
-                                Text("第 \(s) 季")
-                                    .font(.system(size: 12.5, weight: current == s ? .semibold : .regular))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(current == s ? Color.primary.opacity(0.14) : Color.primary.opacity(0.04))
-                                    )
-                                    .foregroundStyle(current == s ? Color.primary : Color.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .id(s)
-                        }
-                    }
-                    .padding(.vertical, 1)
+                    seasonButtons(group, current: current)
                 }
-                .frame(maxWidth: 420)
 
-                if group.seasons.count > 5 {
-                    Button {
-                        stepSeason(proxy, group: group, forward: true)
-                    } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
-                            .frame(width: 18, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                Button {
+                    scrollSeasons(proxy, group: group, toEnd: true)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 18, height: 22)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("查看后面的季度")
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func stepSeason(_ proxy: ScrollViewProxy, group: SeriesGroup, forward: Bool) {
-        let seasons = group.seasons
-        let current = selectedSeason ?? seasons.first ?? 1
-        guard let idx = seasons.firstIndex(of: current) else { return }
-        let next = min(max(idx + (forward ? 1 : -1), 0), seasons.count - 1)
-        guard seasons[next] != current else { return }
-        withAnimation(.smooth(duration: 0.2)) {
-            selectedSeason = seasons[next]        // ← 关键：箭头要真的切季
-            proxy.scrollTo(seasons[next], anchor: .center)
+    private func scrollSeasons(_ proxy: ScrollViewProxy, group: SeriesGroup, toEnd: Bool) {
+        guard let target = toEnd ? group.seasons.last : group.seasons.first else { return }
+        withAnimation(.smooth(duration: 0.25)) {
+            proxy.scrollTo(target, anchor: toEnd ? .trailing : .leading)
         }
     }
 
