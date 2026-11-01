@@ -1,69 +1,47 @@
 # Lumen 交接文档
 
-## 本轮 iPad 首页过渡与详情/轮播改动（2026-10-31，已合入 main）
+> 更新时间：2026-11-01  
+> 分支：`main`（已合并 `feature/nas-shared-library`）  
+> 合并提交：`e9aacee`；feature 最后提交：`2a9dc78`  
+> 版本：0.1.5 (Build 13)  
+> 工作区：干净，`origin/main` 已推送
 
-- 电视剧详情（iPad）再调整：标题/评分/元数据/季集徽标/播放收藏/进度/规格/简介整块信息下移到封面下缘，距选季模块约 24pt；横屏头图再 +130pt，把信息/选季/剧集行整体下移，剧集行贴住屏幕下缘（文件信息滚到下一屏）。真机横屏截图确认。
-- 电影详情（iPad 横屏）：信息块再下移 110pt，演职人员模块贴住屏幕下缘，姓名/角色留底部安全边距；简介最多 3 行，超出显示「展开全部」。真机横屏截图确认。
-- 首页轮播（所有平台）：按「续播 > 收藏 > 未看完 > 高分/最近添加」简单打分选片；点封面进入对应电影/剧集详情；页码点移到底部居中。新增 `testCarouselImageOpensDetail`。
-- 诊断补充：iPad 也支持 `detail-test.flag` 直接打开详情页；`shot.flag` 内容含 `slow` 时会等 9 秒再截，便于等 NAS 元数据读完。
+## 最近完成
 
-- 当前横屏形态：媒体库首页首排完整海报可见（底部留 12pt）；电视剧详情信息块贴住封面下缘、选季区紧接其下、剧集行压在屏幕下缘；横屏选集区无材质底。竖屏保持 0.62 屏高与上下渐隐材质。
-- 当前电视剧详情：头图比例 0.64（横屏 +130pt，上限 860），信息块下移、选季区不再额外下沉；电影详情横屏 +110pt，演职人员贴住首屏下缘；简介统一最多 3 行。仅 iPad 启用。
-- 验证：真机横屏截图确认首页轮播（推荐内容/居中页码）、剧集详情、电影详情（演职人员贴底 + 3 行简介）；UnitTests 4/4 通过；UI 测试 4/5 通过，新增 `testCarouselImageOpensDetail` 通过，`testCarouselSwipeAndRotation` 仍是已知的模拟器旋转时序失败；macOS 签名构建通过。
-
-- 分支：`codex/ipad-home-transition`，已 fast-forward 合入 `main`（`bfe50e2`）；`origin/main` 已推送。
-- 合入后工作区干净；代码与真机验证时的提交一致，后续只追加本交接文档。
-- 仅 iPad 媒体库首页启用沉浸式深色背景，头图渐隐起点改为 0.68；影片区向上叠入 100pt，播放信息底部留白至少 132pt。
-- 首页磨砂层用固定 200pt 渐入、100pt 渐出，避免随内容长度改变过渡宽度。
-- 首页背景保留旧图直到新图加载完成，再做 0.4 秒交叉淡入；分页仍使用原有滑动交互，尚未实现逐帧跟随拖动进度。
-- 修改位置：`Sources/UI/HomeView.swift`、`Sources/UI/Components.swift`。首页沉浸式深色背景仅 iPad；轮播推荐、封面点击和页码居中三端共用。
-- 验证：iOS Simulator、macOS 签名构建通过；iPad Pro 13-inch (M5) 当前 5 项导航 UI 测试 4 项通过，`testCarouselSwipeAndRotation` 为已知模拟器旋转时序失败。
-- 真机首页、电视剧详情、电影详情均已用真实影片截图核对。
-
-以下为本轮合并前的 main 交接记录（历史）。
-
-## NAS 共享库分支（2026-10-31）
-
-- 分支：`feature/nas-shared-library`，基于 `8ce1bce`（已合入 iPad 详情/轮播等 main 改动）。
-- 每个可写媒体源根目录 `.lumen-cache/` 增加：
-  - `library-metadata.json`：可覆盖的刮削 catalog；扫描时导入，完整条目直接跳过 TMDB；
-  - `library-state.json`：按源内相对路径保存进度/收藏；播放中 15 秒合并写，关闭时 flush。
-- 设置 → 同步增加两个开关（默认开启）和共享文件说明。
-- 支持本地文件夹 / WebDAV；Emby/Jellyfin、只读 HTTP 跳过。
-- 收藏取消通过 `favorite:false + updatedAt` tombstone 同步，另一台设备启动/扫描/回前台/立即同步时应用；清空进度还没有 tombstone；并发写 last-writer-wins；共享格式是 JSON，不是 NFO。
-- 设计细节见 `Docs/NAS_SHARED_LIBRARY.md`。
-- 验证：iOS Simulator / macOS 签名构建通过；UnitTests（含 SharedLibrarySyncTests）通过；iPad UI 测试通过。
-
-以下为 main 原交接记录。
-
-> 更新时间：2026-10-31  
-> 分支：`main`（已推送，工作区干净）  
-> 最近提交：`eb4ddf6 macOS 去筛选箭头；iPad 顶栏去框、搜索收进更多、首页上移`  
-> 版本：0.1.5 (Build 13)
+- **NAS 共享库**：刮削元数据、观看进度、收藏写入媒体源 `.lumen-cache`；换机/重装扫描即可复用。
+- **收藏取消跨设备删除**：`favorite:false + updatedAt` tombstone；另一台设备启动/扫描/回前台/立即同步时应用。
+- **设置页**：现代卡片概览；三张统计卡等高；右侧改为 NAS 同步状态；同步页增加共享开关。
+- **年代/类型/评分/分级**：不再进入页面就全库 `scrapeAll`，直接用共享元数据。
+- **电视剧季度选择**：能全宽放下就展示全部；放不下才出箭头，箭头只滚动列表，不直接切季。
+- **iPad 详情/轮播**：详情版式、横屏贴底、首页轮播推荐与页码、封面点击进详情已合入 main。
+- **macOS 便携构建**：本机 `/Applications/Lumen.app` 使用开发签名；其他机器使用 `dist/0.1.5/Lumen-0.1.5-macOS-arm64-adhoc-2a9dc78.zip`（临时 ad-hoc，未公证）。
 
 ---
 
 ## 1. 项目概况
 
-Lumen 是本地 / NAS 影视库播放器：
+SwiftUI 本地 / NAS 影视库播放器：
 
-- SwiftUI，iOS 17+ / macOS 14+；
-- 视频内核：MPVKit（libmpv），部分场景 AVFoundation；
-- 工程由 XcodeGen 管理：改 `project.yml` 后执行 `xcodegen generate`；
-- 包名 / Bundle ID：
-  - macOS：`com.example.lumen.mac`
-  - iOS：`com.consynia.lumen`
-- Development Team：`WZ6AS9TRW2`（macOS 请用签名构建，见第 5 节）。
+- iOS 17+ / macOS 14+；
+- MPVKit（libmpv）+ AVFoundation；
+- XcodeGen：改 `project.yml` 后执行 `xcodegen generate`；
+- Bundle ID：
+  - macOS `com.example.lumen.mac`
+  - iOS `com.consynia.lumen`
+- Development Team：`WZ6AS9TRW2`。
 
 主要目录：
 
 ```
-Sources/App/          App 入口、macOS/iPad 根视图、侧边栏、顶栏
-Sources/Core/         Store、MediaSource、Metadata/TMDB、Keychain、字幕解析
+Sources/App/          App 入口、macOS 侧边栏、iPad 顶栏
+Sources/Core/         Store、媒体源、Metadata/TMDB、字幕、共享库同步
 Sources/UI/           Home、Detail、Player、Settings、Components
+Tests/Unit/           单元测试（含 SharedLibrarySyncTests）
 Tests/iOS/            iPad UI 测试
-Tools/                install-ipad.sh 等
+Tools/install-ipad.sh 真机安装脚本
 project.yml           XcodeGen 工程定义
+Docs/                 设计/共享库说明
+dist/                 便携版 zip（不跟 git 提交）
 ```
 
 ---
@@ -72,112 +50,109 @@ project.yml           XcodeGen 工程定义
 
 ### macOS
 
-- 分栏侧边栏（`NavigationSplitView`），不是悬浮面板；
-- 主窗口透明标题栏 + 全尺寸内容，头图顶到窗口最上沿；
-- 首页头图约 0.88 屏高，影片区压在磨砂层上，只露约一多半卡片；
-- 电影 / 电视剧列表页启用首条内容的虚化背景，整页跟随背景色调；
-- 排序 / 筛选菜单已隐藏系统下拉箭头；
-- 右侧、详情页、侧边栏滚动条为自绘细胶囊，滚动时浮现、停止约 0.9 秒后淡出；
-- 详情页选集区不再有灰色卡片底，直接浮在模糊背景上；
-- 右上角“更多”菜单只显示三个点（无下拉箭头）。
+- `NavigationSplitView` 侧边栏，不是悬浮面板；
+- 透明标题栏 + 全尺寸内容，头图顶到窗口上沿；
+- 首页头图约 0.88 屏高，影片区压在磨砂层上；
+- 电影/电视剧列表页使用首条内容的虚化背景；
+- 排序/筛选菜单隐藏系统下拉箭头；
+- 主内容、详情、侧边栏使用自绘滚动条：滚动时浮现、停止约 0.9 秒后淡出；
+- 详情页选集区在 macOS 直接浮在模糊背景上；
+- 设置页为卡片概览 + 详情；右上「更多」只显示三个点。
 
 ### iPad
 
-- 顶栏：
-  - 左侧一级栏目下拉（媒体库 / 偏好 / 文件源 / 服务器 / 设置），无外框；
-  - 中间「继续观看 / 电影 / 电视剧」或偏好分类胶囊；
-  - 右上角搜索 / 三个点均无外框（iOS 26 的工具栏玻璃底也已隐藏）；
-  - 继续观看 / 电影 / 电视剧的搜索已收进「…」菜单；
-  - 偏好下所有页面不提供搜索入口。
-- 首页头图约 0.62 屏高，继续观看上移，底部约露一排半卡片；
-- 电视剧详情头图 0.76 比例，选集模块使用轻磨砂；
-- iPhone 仍是 4 个 Tab，页面内搜索与分类入口保留，不受 iPad 顶栏改动影响。
+- 顶栏左侧一级栏目下拉、中间分类胶囊、右侧搜索/更多，均无外框；
+- 继续观看/电影/电视剧的搜索收进「…」菜单；
+- 偏好页不提供搜索；
+- 首页头图约 0.62 屏高，底部约露一排半卡片；
+- 电视剧详情头图更高，选集模块轻磨砂；
+- 季度选择全宽展示；放不下才出现左右箭头，箭头滚动列表；
+- 详情/轮播版式已按真机横竖屏调过。
 
-### 设置
+### iPhone
 
-已按 `Lumen设置-现代.html` 重做：
-
-- 搜索、深浅色切换；
-- 三张概览卡：媒体库 / 已刮削 / iCloud 同步；
-- 七张偏好卡片：通用、资源、同步、播放、播放器界面、字幕和音轨、隐私与安全；
-- 每张卡片进入独立详情页，卡片式行布局、新版开关；
-- 原有设置项全部保留；
-- 底部显示真实版本与「无遥测 · 无上报」。
-
-注意：设计稿里的「存储占用」暂时用「已刮削」替代，因为目前没有做库体积 / 缓存体积统计。
-
-### 字幕 / 播放
-
-- 外挂字幕支持语言后缀：`影片.chs.srt`、`影片.zh-CN.ass`、`影片.eng.forced.srt` 等；
-- 多字幕优先级：简中 > 繁中 > 英文；
-- 字幕背景默认**透明**，设置 → 字幕和音轨 → 「字幕背景」可切「透明 / 半透明」；
-- 字幕文件编码支持 UTF-8 / UTF-16 / GB18030，CRLF 已处理。
-
-### 演员 / 元数据
-
-- 演员作品当前使用 **TMDB `combined_credits`**（本地优先方案已回滚）；
-- 本地优先 / 本地 + TMDB 降级 + 缓存的方案在历史提交中，可按需取回，但要注意本地扫描会读 NAS，性能敏感。
+保持 4 个 Tab、页面内搜索与分类入口，不套用 iPad 顶栏改动。
 
 ---
 
-## 3. 最近提交（从新到旧）
+## 3. NAS 共享库
+
+设计细节：[Docs/NAS_SHARED_LIBRARY.md](Docs/NAS_SHARED_LIBRARY.md)
+
+每个可写媒体源（本地文件夹 / WebDAV）根目录：
 
 ```
-eb4ddf6 macOS 去筛选箭头；iPad 顶栏去框、搜索收进更多、首页上移
-15283e5 字幕背景默认透明，可在字幕设置里切换半透明
-d03ce9b 字幕：支持带语言后缀的外挂字幕（.chs.srt 等）
-33af6d5 设置页重做：卡片概览 + 分组详情；演员页回滚 TMDB 方案
-cf895f9 macOS：演员作品降级聚合缓存、悬浮滚动条、详情页过渡带
-cf11442 macOS：侧边栏恢复分栏、选集区融入背景、演员本地计算、自绘滚动条
-25060a2 macOS 浮动侧边栏 + 电影/电视剧背景联动 + 启动工具栏位置
-8eded73 macOS 首页只露半排卡片 + 背景色调联动 + 侧边栏滚动条
+.lumen-cache/library-metadata.json   刮削 catalog（可覆盖）
+.lumen-cache/library-state.json      观看进度 + 收藏（可覆盖）
 ```
+
+- 扫描时先导入 catalog；完整条目（类型 + 简介 + 海报）直接跳过 TMDB；
+- 不完整条目仍由 TMDB 补齐；
+- 写入前先读已有文件合并，保留另一台设备已刮好的条目；
+- 收藏取消写 `favorite:false + updatedAt`，按时间戳互相删除；
+- 本机 `favorites-stamps.json` 保存收藏修改时间，不写 NAS；
+- 设置 → 同步：「元数据写入媒体源」「观看进度 / 收藏写入媒体源」，默认开启；
+- 播放中约 15 秒合并写，关闭播放器/进后台 flush；元数据 2 秒合并窗口；
+- App 回前台、设置「立即同步」时重新拉取共享状态；
+- 不写密码 / TMDB Key / 书签。
+
+限制：
+
+- 进度清除暂无 tombstone；
+- 多设备同时写是 last-writer-wins（有先读再合并，但没有文件锁/ETag 重试）；
+- 共享格式是 Lumen JSON，不是 Kodi/Emby 直接识别的 NFO；
+- Emby/Jellyfin、只读 HTTP 源跳过。
 
 ---
 
-## 4. 关键文件
+## 4. 签名与钥匙串
 
-| 文件 | 作用 |
-|---|---|
-| `Sources/App/LumenApp.swift` | 入口、macOS 侧边栏/窗口、iPad 一级栏目与顶栏、SectionMenu |
-| `Sources/UI/HomeView.swift` | 首页 / 电影 / 电视剧 / 偏好列表、Hero、iPad 顶栏按钮、自绘主滚动条 |
-| `Sources/UI/DetailView.swift` | 详情页、头图、选集、演职人员、详情滚动条 |
-| `Sources/UI/SettingsView.swift` | 新设置页概览 + 详情 + 各 Pane |
-| `Sources/UI/PlayerView.swift` | 播放器、外挂字幕渲染、字幕背景 |
-| `Sources/UI/Components.swift` | HeroCarousel、BlurredBackdrop、自绘滚动条、公共控件 |
-| `Sources/Core/Store.swift` | 媒体库、扫源、字幕候选匹配、Keychain/Credentials |
-| `Sources/Core/Metadata.swift` | TMDB、元数据缓存、TMDB Key |
-| `Sources/Core/Subtitles.swift` | SRT / ASS / VTT 解析与编码探测 |
-| `Sources/Core/Preferences.swift` | 所有偏好项（外观、播放、字幕、外观等） |
-| `Tests/iOS/LibraryNavigationTests.swift` | iPad 顶栏、搜索、设置、详情 UI 测试 |
+- 本机 `/Applications/Lumen.app` 当前是**开发证书签名 Debug 版**（Team `WZ6AS9TRW2`），用于复用旧钥匙串；
+- 便携 zip 是 **ad-hoc 签名 Release**；其他机器上签名不同，钥匙串不会复用，首次需要输入一次凭据；
+- 旧的 ad-hoc 便携版覆盖安装到本机时，会因签名不同重新弹钥匙串授权；点「始终允许」后该签名稳定；
+- 不要用 `CODE_SIGNING_ALLOWED=NO` 构建本机日常使用的 macOS App，否则每次构建都可能重弹钥匙串；
+- 更换签名/重建便携包后钥匙串提示是 macOS 的 ACL 行为，不是应用重复读取。
 
 ---
 
 ## 5. 构建与验证
 
-### 生成工程
+### 工程
 
 ```bash
 cd /Users/consynia/AI_Project/Lumen
 xcodegen generate
 ```
 
-### macOS（要验钥匙串时务必签名构建）
+### macOS（本机，签名）
 
 ```bash
 xcodebuild -project Lumen.xcodeproj -scheme Lumen-macOS -configuration Debug \
   -destination 'platform=macOS' -derivedDataPath /tmp/dd-mac build
 ```
 
-不要加 `CODE_SIGNING_ALLOWED=NO`。ad-hoc 签名会让 macOS 认为每次构建都是不同应用，钥匙串会反复弹授权。签名版第一次访问点 **“始终允许”**，之后同 Team/证书的构建不再重复弹。
+不要加 `CODE_SIGNING_ALLOWED=NO`。
+
+### macOS 便携 ad-hoc
+
+Release + sandbox entitlements + `CODE_SIGN_IDENTITY=-`，产物：
+
+```
+dist/0.1.5/Lumen-0.1.5-macOS-arm64-adhoc-2a9dc78.zip
+dist/0.1.5/临时使用说明.txt
+```
+
+其他机器首次打开需要右键 → 打开，或：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Lumen.app
+```
+
+仅 Apple Silicon；未公证。
 
 ### iOS 构建 / 测试
 
 ```bash
-xcodebuild -project Lumen.xcodeproj -scheme Lumen-iOS -configuration Debug \
-  -destination 'generic/platform=iOS Simulator' \
-  -derivedDataPath /tmp/dd-ios build
-
 xcodebuild test -project Lumen.xcodeproj -scheme Lumen-iOS \
   -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' \
   -derivedDataPath /tmp/dd-tests \
@@ -186,53 +161,63 @@ xcodebuild test -project Lumen.xcodeproj -scheme Lumen-iOS \
   CODE_SIGNING_ALLOWED=NO
 ```
 
-已知：`testCarouselSwipeAndRotation` 在模拟器上是历史遗留失败，不是新回归。
+已知：`testCarouselSwipeAndRotation` 在模拟器上是历史旋转时序失败。
 
-### 真机 iPad
+### iPad 真机
 
 ```bash
 ./Tools/install-ipad.sh EB06D667-D31C-581C-8061-4C77CC47B395
 ```
 
-设备锁屏或 Developer Disk Image 未挂载时会安装失败；解锁、亮屏、联网后重试。
+安装成功但启动被拒时通常是 iPad 锁屏（`SBMainWorkspace ... Locked`），解锁后手动打开即可。
 
 ---
 
 ## 6. 待办 / 已知问题
 
-1. **电视剧详情信息/选季间距**
-   - 当前 iPad：剧集信息整块压在封面下缘，选季区紧接其下，间距约 24pt（不含选集模块内边距）；横屏头图再 +130pt，让剧集行贴住屏幕下缘。真机横屏已确认。
-   - 若还要按“紫色高度”精确对齐某个色块，需要一张圈图再调。
-2. **设置概览的存储占用**
-   - 现在是「已刮削」代替设计稿的「存储占用」；如需严格还原，需要补索引 / 缓存体积统计。
-3. **演员作品方案**
-   - 当前纯 TMDB；本地优先与本地 + 降级 + 缓存方案在历史提交里，重新启用前要先解决 NAS 频繁读取的性能问题。
-4. **macOS 窗口截图**
-   - 当前终端没有屏幕录制权限，无法自动截 macOS 窗口；iPad 模拟器截图可正常生成。
-5. **钥匙串**
-   - 只解决了“每次构建都弹”的签名问题；首次授权仍需点一次“始终允许”。
-   - 若后续要完全无弹窗，可评估 Data Protection Keychain，但需要 entitlements / 迁移。
-6. **iPad 顶栏**
-   - 已移除栏目选择、搜索、三个点的外框；中间分类胶囊仍保留自己的材质底，这是刻意保留的。
-7. **macOS / iPad 差异**
-   - 所有“只针对 macOS”的改动都用 `#if os(macOS)` 隔离；改 Home / Detail / Settings 时注意不要重新把 macOS 的入口带到 iPad。
+1. **电视剧“每季卡片下移紫色高度一半”**：尚未精确落位，需要一张电视剧页截图并圈出“紫色高度”指哪块。
+2. **设置概览存储占用**：目前用「已刮削」替代，设计稿的存储用量统计尚未实现。
+3. **进度清除 tombstone**：清空进度不会删除其它设备共享记录。
+4. **共享冲突**：无文件锁/ETag 重试；多设备并发写最后写者覆盖。
+5. **NFO 导出**：如需跨 Kodi/Emby 共享，下一步增加可选 NFO 写回。
+6. **共享状态不是实时推送**：其它设备在启动/扫描/回前台/手动同步时拉取，不做后台轮询。
+7. **macOS 截图权限**：当前终端没有屏幕录制权限，无法自动截 macOS 窗口。
 
 ---
 
-## 7. 交接检查清单
+## 7. 关键文件
 
-- [ ] 改动 `project.yml` 后执行 `xcodegen generate`
-- [ ] macOS 用签名构建，不要 `CODE_SIGNING_ALLOWED=NO`
-- [ ] 同时跑 macOS + iOS Simulator 构建
-- [ ] iPad UI 测试至少跑 `LibraryNavigationTests`
+| 文件 | 作用 |
+|---|---|
+| `Sources/App/LumenApp.swift` | 入口、macOS 侧边栏/窗口、iPad 一级栏目与顶栏 |
+| `Sources/UI/HomeView.swift` | 首页/电影/电视剧/偏好、Hero、顶栏、滚动条 |
+| `Sources/UI/DetailView.swift` | 详情、头图、选集、季度选择、演职人员 |
+| `Sources/UI/SettingsView.swift` | 设置概览 + 详情、同步开关、统计卡 |
+| `Sources/UI/PlayerView.swift` | 播放器、外挂字幕、字幕背景 |
+| `Sources/Core/Store.swift` | 媒体库、进度/收藏、收藏时间戳、扫描导入 |
+| `Sources/Core/SharedLibrarySync.swift` | 共享 catalog/state 模型、合并、调度 |
+| `Sources/Core/Metadata.swift` | TMDB、共享元数据导入、分类 |
+| `Sources/Core/Sources.swift` | 媒体源、`writeShared` 可覆盖写 |
+| `Sources/Core/Subtitles.swift` | SRT/ASS/VTT、语言后缀 |
+| `Docs/NAS_SHARED_LIBRARY.md` | 共享库设计/限制 |
+| `Tests/Unit/SharedLibrarySyncTests.swift` | 共享模型与本地覆盖写测试 |
+
+---
+
+## 8. 交接检查清单
+
+- [ ] 改 `project.yml` 后执行 `xcodegen generate`
+- [ ] macOS 日常使用用签名构建，不要 `CODE_SIGNING_ALLOWED=NO`
+- [ ] 共享状态改动后同时跑 UnitTests（含 SharedLibrarySyncTests）和 iPad UI 测试
+- [ ] 便携包是 ad-hoc：提醒右键打开 / 去 quarantine / 仅 Apple Silicon
+- [ ] iPad 安装后若启动失败，先确认设备解锁
 - [ ] 改 iPad 顶栏时确认 iPhone 仍保留页面内搜索
-- [ ] 字幕改动注意语言后缀与编码
-- [ ] 演员页改动注意不要引入全库扫描，避免 NAS 性能问题
-- [ ] 提交前确认工作区干净、已推送 `origin/main`
+- [ ] 演员页不要重新引入全库扫描，避免 NAS 性能问题
+- [ ] 提交前工作区干净并推送 `origin/main`
 
 ---
 
-## 8. 仓库
+## 9. 仓库
 
 ```
 git@github.com:chaosdancing/Lumen.git
